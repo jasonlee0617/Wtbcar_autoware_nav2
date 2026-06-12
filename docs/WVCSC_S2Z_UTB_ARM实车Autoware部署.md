@@ -1,4 +1,4 @@
-# WVCSC_S2Z_UTB_ARM 实车 Autoware 部署
+# Wtbcar_autoware_nav2 实车 Autoware 部署
 
 本文档描述当前推荐的正式实车部署方式：**直接使用官方 `autoware.launch.xml` 作为唯一主入口。**
 
@@ -7,7 +7,7 @@
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
-source ~/WVCSC_S2Z_UTB_ARM/install/setup.bash
+source ~/Wtbcar_autoware_nav2/install/setup.bash
 ros2 launch autoware_launch autoware.launch.xml \
   map_path:=/home/eisa/autoware_map/maps/wvcsc_map1 \
   vehicle_model:=wvcsc_vehicle \
@@ -32,7 +32,7 @@ ros2 launch autoware_launch autoware.launch.xml \
 - Ubuntu 22.04
 - ROS 2 Humble
 - Autoware 工作区：`/home/eisa/autoware`
-- WVCSC 工作区：`/home/eisa/WVCSC_S2Z_UTB_ARM`
+- WVCSC 工作区：`/home/eisa/Wtbcar_autoware_nav2`
 
 ### 3.2 source 顺序
 
@@ -41,13 +41,13 @@ ros2 launch autoware_launch autoware.launch.xml \
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
-source ~/WVCSC_S2Z_UTB_ARM/install/setup.bash
+source ~/Wtbcar_autoware_nav2/install/setup.bash
 ```
 
 第三步完成后，运行环境会自动带上：
 
 - `ROS_DOMAIN_ID=88`
-- `~/.local/acados/lib` 的动态库路径
+- `/opt/acados/lib` 的动态库路径
 
 可以手动确认：
 
@@ -62,12 +62,12 @@ echo $LD_LIBRARY_PATH | tr ':' '\n' | grep acados
 
 见文档：
 
-- [`Autoware.universe源码下载编译.md`](/home/eisa/WVCSC_S2Z_UTB_ARM/src/docs/Autoware.universe源码下载编译.md)
+- [`Autoware.universe源码下载编译.md`](/home/eisa/Wtbcar_autoware_nav2/src/docs/Autoware.universe源码下载编译.md)
 
 ### 4.2 编译 WVCSC 工作区
 
 ```bash
-cd /home/eisa/WVCSC_S2Z_UTB_ARM
+cd /home/eisa/Wtbcar_autoware_nav2
 source /opt/ros/humble/setup.bash
 source /home/eisa/autoware/install/setup.bash
 colcon build --symlink-install
@@ -98,7 +98,7 @@ map_config.yaml
 
 如果还在准备地图，请看：
 
-- [`autoware_map_workflow.md`](/home/eisa/WVCSC_S2Z_UTB_ARM/src/docs/autoware_map_workflow.md)
+- [`autoware_map_workflow.md`](/home/eisa/Wtbcar_autoware_nav2/src/docs/autoware_map_workflow.md)
 
 ## 6. 运行前检查
 
@@ -148,7 +148,7 @@ echo $ROS_DOMAIN_ID
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
-source ~/WVCSC_S2Z_UTB_ARM/install/setup.bash
+source ~/Wtbcar_autoware_nav2/install/setup.bash
 ros2 launch autoware_launch autoware.launch.xml \
   map_path:=/home/eisa/autoware_map/maps/wvcsc_map1 \
   vehicle_model:=wvcsc_vehicle \

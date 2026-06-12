@@ -4,7 +4,7 @@ project(wvcsc_vehicle_launch)
 find_package(ament_cmake REQUIRED)
 
 set(AMENT_CMAKE_ENVIRONMENT_HOOKS_DESC_acados_library_path
-  "prepend-non-duplicate;LD_LIBRARY_PATH;/home/eisa/.local/acados/lib")
+  "prepend-non-duplicate;LD_LIBRARY_PATH;/opt/acados/lib")
 set(AMENT_CMAKE_ENVIRONMENT_HOOKS_DESC_ros_domain_id
   "set-if-unset;ROS_DOMAIN_ID;88")
 ament_environment_hooks(

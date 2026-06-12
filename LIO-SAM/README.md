@@ -2,7 +2,7 @@
 
 ## WVCSC workspace note
 
-In `WVCSC_S2Z_UTB_ARM`, this package is used first as a **3D mapping toolchain**, not as the default online localization backend for `full_real_vehicle.launch.xml`.
+In `Wtbcar_autoware_nav2`, this package is used first as a **3D mapping toolchain**, not as the default online localization backend for `full_real_vehicle.launch.xml`.
 
 Recommended WVCSC entrypoints:
 

@@ -7,7 +7,7 @@ WVCSC 实车最终目标是直接使用官方命令启动：
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
-source ~/WVCSC_S2Z_UTB_ARM/install/setup.bash
+source ~/Wtbcar_autoware_nav2/install/setup.bash
 ros2 launch autoware_launch autoware.launch.xml \
   map_path:=/home/eisa/autoware_map/maps/wvcsc_map1 \
   vehicle_model:=wvcsc_vehicle \
@@ -115,7 +115,7 @@ WVCSC 当前没有真实交通灯识别链，但完整 Autoware 栈会检查：
 
 修改目标：
 
-- 自动补齐 `LD_LIBRARY_PATH` 中的 `~/.local/acados/lib`
+- 自动补齐 `LD_LIBRARY_PATH` 中的 `/opt/acados/lib`
 - 自动设置 `ROS_DOMAIN_ID=88`
 
 结果：

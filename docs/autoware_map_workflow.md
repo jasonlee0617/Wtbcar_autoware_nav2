@@ -7,7 +7,7 @@
 
 如果你想看正式实车部署，请看：
 
-- [`WVCSC_S2Z_UTB_ARM实车Autoware部署.md`](/home/eisa/WVCSC_S2Z_UTB_ARM/src/docs/WVCSC_S2Z_UTB_ARM实车Autoware部署.md)
+- [`Wtbcar_autoware_nav2实车Autoware部署.md`](/home/eisa/Wtbcar_autoware_nav2/src/docs/Wtbcar_autoware_nav2实车Autoware部署.md)
 
 ## 1. 正式地图目录
 
@@ -51,7 +51,7 @@ map_config.yaml
 ```bash
 source /opt/ros/humble/setup.bash
 source /home/eisa/autoware/install/setup.bash
-source /home/eisa/WVCSC_S2Z_UTB_ARM/install/setup.bash
+source /home/eisa/Wtbcar_autoware_nav2/install/setup.bash
 
 ros2 launch lio_sam run_wvcsc_mapping.launch.py \
   launch_hardware:=true \
@@ -63,7 +63,7 @@ ros2 launch lio_sam run_wvcsc_mapping.launch.py \
 ```bash
 source /opt/ros/humble/setup.bash
 source /home/eisa/autoware/install/setup.bash
-source /home/eisa/WVCSC_S2Z_UTB_ARM/install/setup.bash
+source /home/eisa/Wtbcar_autoware_nav2/install/setup.bash
 
 ros2 launch lio_sam run_wvcsc_offline_mapping.launch.py \
   launch_rviz:=false
@@ -174,7 +174,7 @@ mgrs_grid: 54SVE
 
 ```bash
 ros2 run my_navigation2 pgm_to_fake_pcd.py \
-  --yaml /home/eisa/WVCSC_S2Z_UTB_ARM/src/my_navigation2/maps/map_new.yaml \
+  --yaml /home/eisa/Wtbcar_autoware_nav2/src/my_navigation2/maps/map_new.yaml \
   --output /home/eisa/autoware_map/maps/wvcsc_map1/pointcloud_map.pcd
 ```
 
@@ -182,7 +182,7 @@ ros2 run my_navigation2 pgm_to_fake_pcd.py \
 
 ```bash
 ros2 run my_navigation2 pgm_to_fake_pcd.py \
-  --yaml /home/eisa/WVCSC_S2Z_UTB_ARM/src/my_navigation2/maps/map_new.yaml \
+  --yaml /home/eisa/Wtbcar_autoware_nav2/src/my_navigation2/maps/map_new.yaml \
   --output /home/eisa/autoware_map/maps/wvcsc_map1/pointcloud_map.pcd \
   --sample-step 2
 ```

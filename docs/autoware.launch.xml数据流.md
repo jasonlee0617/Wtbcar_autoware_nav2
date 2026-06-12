@@ -7,7 +7,7 @@
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
-source ~/WVCSC_S2Z_UTB_ARM/install/setup.bash
+source ~/Wtbcar_autoware_nav2/install/setup.bash
 ros2 launch autoware_launch autoware.launch.xml \
   map_path:=/home/eisa/autoware_map/maps/wvcsc_map1 \
   vehicle_model:=wvcsc_vehicle \
@@ -17,9 +17,9 @@ ros2 launch autoware_launch autoware.launch.xml \
 
 运行前提：
 
-- `source ~/WVCSC_S2Z_UTB_ARM/install/setup.bash` 会自动补齐：
+- `source ~/Wtbcar_autoware_nav2/install/setup.bash` 会自动补齐：
   - `ROS_DOMAIN_ID=88`
-  - `LD_LIBRARY_PATH` 中的 `~/.local/acados/lib`
+  - `LD_LIBRARY_PATH` 中的 `/opt/acados/lib`
 - 这样可以避免 ROS 2 默认 domain 串网，也能保证 `path_optimizer` 的 `acados` 依赖可加载。
 
 ## 2. 启动层次
@@ -244,6 +244,6 @@ traffic_light_heartbeat.py
 
 ## 7. 相关文档
 
-- [`Autoware启动排障与修复复盘.md`](/home/eisa/WVCSC_S2Z_UTB_ARM/src/docs/Autoware启动排障与修复复盘.md)
-- [`WVCSC_S2Z_UTB_ARM实车Autoware部署.md`](/home/eisa/WVCSC_S2Z_UTB_ARM/src/docs/WVCSC_S2Z_UTB_ARM实车Autoware部署.md)
-- [`autoware_map_workflow.md`](/home/eisa/WVCSC_S2Z_UTB_ARM/src/docs/autoware_map_workflow.md)
+- [`Autoware启动排障与修复复盘.md`](/home/eisa/Wtbcar_autoware_nav2/src/docs/Autoware启动排障与修复复盘.md)
+- [`Wtbcar_autoware_nav2实车Autoware部署.md`](/home/eisa/Wtbcar_autoware_nav2/src/docs/Wtbcar_autoware_nav2实车Autoware部署.md)
+- [`autoware_map_workflow.md`](/home/eisa/Wtbcar_autoware_nav2/src/docs/autoware_map_workflow.md)

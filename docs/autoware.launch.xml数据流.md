@@ -1,17 +1,17 @@
-# WVCSC `autoware.launch.xml` 实车数据流
+# WTB `autoware.launch.xml` 实车数据流
 
 ## 1. 正式启动命令
 
-以后 WVCSC 实车统一使用官方入口启动：
+以后 WTB 实车统一使用官方入口启动：
 
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
 source ~/Wtbcar_autoware_nav2/install/setup.bash
 ros2 launch autoware_launch autoware.launch.xml \
-  map_path:=/home/eisa/autoware_map/maps/wvcsc_map1 \
-  vehicle_model:=wvcsc_vehicle \
-  sensor_model:=wvcsc_sensor_kit \
+  map_path:=/home/eisa/autoware_map/maps/wtb_map1 \
+  vehicle_model:=wtb_vehicle \
+  sensor_model:=wtb_sensor_kit \
   data_path:=/home/eisa/autoware_data
 ```
 
@@ -40,10 +40,10 @@ autoware.launch.xml
 └── rviz2
 ```
 
-WVCSC 现在不再额外包一层 `wvcsc.launch.xml` 主入口，而是直接让官方 `autoware.launch.xml` 识别：
+WTB 现在不再额外包一层 `wtb.launch.xml` 主入口，而是直接让官方 `autoware.launch.xml` 识别：
 
-- `vehicle_model:=wvcsc_vehicle`
-- `sensor_model:=wvcsc_sensor_kit`
+- `vehicle_model:=wtb_vehicle`
+- `sensor_model:=wtb_sensor_kit`
 
 ## 3. 主数据流
 
@@ -123,15 +123,15 @@ route + pose + perception
   -> /control/command/control_cmd
 ```
 
-### 3.5 WVCSC 底盘适配层
+### 3.5 WTB 底盘适配层
 
 ```text
 /control/control_mode_request
-  -> wvcsc_vehicle_interface
+  -> wtb_vehicle_interface
   -> /vehicle/status/control_mode
 
 /control/command/control_cmd
-  -> wvcsc_vehicle_interface
+  -> wtb_vehicle_interface
   -> /twist_cmd
   -> wtb_car
   -> CAN
@@ -142,13 +142,13 @@ route + pose + perception
   -> wtb_car
   -> /car_odom
   -> /wtb_car_message
-  -> wvcsc_vehicle_interface
+  -> wtb_vehicle_interface
   -> /vehicle/status/velocity_status
   -> /vehicle/status/steering_status
   -> /vehicle/status/gear_status
 ```
 
-## 4. 当前 WVCSC 关键适配点
+## 4. 当前 WTB 关键适配点
 
 ### 4.1 LiDAR 点云格式适配
 
@@ -164,7 +164,7 @@ route + pose + perception
 
 ### 4.3 交通灯心跳占位
 
-WVCSC 当前没有真实交通灯识别链，因此补了：
+WTB 当前没有真实交通灯识别链，因此补了：
 
 ```text
 traffic_light_heartbeat.py
@@ -178,7 +178,7 @@ traffic_light_heartbeat.py
 
 ### 4.4 控制模式接管
 
-`wvcsc_vehicle_interface` 已补齐：
+`wtb_vehicle_interface` 已补齐：
 
 - `/control/control_mode_request` 服务
 - `/vehicle/status/control_mode` 状态发布
@@ -215,9 +215,9 @@ traffic_light_heartbeat.py
 
 ### 5.3 为什么官方 `autoware.launch.xml` 现在可以直接作为主入口
 
-因为本次已经把 WVCSC 运行所需的关键差异前移到了更底层：
+因为本次已经把 WTB 运行所需的关键差异前移到了更底层：
 
-- `wvcsc_vehicle` / `wvcsc_sensor_kit` 模型本身可被官方入口识别
+- `wtb_vehicle` / `wtb_sensor_kit` 模型本身可被官方入口识别
 - 运行时 env hook 已自动设置 `ROS_DOMAIN_ID=88` 和 `acados` 路径
 - 控制模式服务补齐
 - LiDAR / IMU / 底盘协方差与状态链修复
@@ -298,7 +298,7 @@ traffic_light_heartbeat.py
 建议：
 
 - 临时验证：直接把该值改成 `true`
-- 长期做法：自定义一个新的 preset，比如 `wvcsc_dynamic_preset.yaml`，然后启动时使用 `planning_module_preset:=wvcsc_dynamic`
+- 长期做法：自定义一个新的 preset，比如 `wtb_dynamic_preset.yaml`，然后启动时使用 `planning_module_preset:=wtb_dynamic`
 
 如果不先打开这个开关，你会看到下面这些典型现象：
 
@@ -832,4 +832,4 @@ traffic_light_heartbeat.py
    - `/planning/scenario_planning/lane_driving/behavior_planning/behavior_path_planner/info/dynamic_obstacle_avoidance`
    - `/planning/scenario_planning/lane_driving/behavior_planning/behavior_path_planner/debug/static_obstacle_avoidance`
 
-如果你愿意，下一步可以直接在 `wvcsc_autoware_bringup` 里做一套“WVCSC 动态避障 + CenterPoint”专用 preset 和 param overlay，这样就不用每次去改 `~/autoware/install` 下的文件。
+如果你愿意，下一步可以直接在 `wtb_autoware_bringup` 里做一套“WTB 动态避障 + CenterPoint”专用 preset 和 param overlay，这样就不用每次去改 `~/autoware/install` 下的文件。

@@ -9,9 +9,9 @@ source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
 source ~/Wtbcar_autoware_nav2/install/setup.bash
 ros2 launch autoware_launch autoware.launch.xml \
-  map_path:=/home/eisa/autoware_map/maps/wvcsc_map1 \
-  vehicle_model:=wvcsc_vehicle \
-  sensor_model:=wvcsc_sensor_kit \
+  map_path:=/home/eisa/autoware_map/maps/wtb_map1 \
+  vehicle_model:=wtb_vehicle \
+  sensor_model:=wtb_sensor_kit \
   data_path:=/home/eisa/autoware_data
 ```
 
@@ -32,7 +32,7 @@ ros2 launch autoware_launch autoware.launch.xml \
 - Ubuntu 22.04
 - ROS 2 Humble
 - Autoware 工作区：`/home/eisa/autoware`
-- WVCSC 工作区：`/home/eisa/Wtbcar_autoware_nav2`
+- WTB 工作区：`/home/eisa/Wtbcar_autoware_nav2`
 
 ### 3.2 source 顺序
 
@@ -64,7 +64,7 @@ echo $LD_LIBRARY_PATH | tr ':' '\n' | grep acados
 
 - [`Autoware.universe源码下载编译.md`](/home/eisa/Wtbcar_autoware_nav2/src/docs/Autoware.universe源码下载编译.md)
 
-### 4.2 编译 WVCSC 工作区
+### 4.2 编译 WTB 工作区
 
 ```bash
 cd /home/eisa/Wtbcar_autoware_nav2
@@ -79,7 +79,7 @@ source install/setup.bash
 当前运行命令固定使用：
 
 ```text
-/home/eisa/autoware_map/maps/wvcsc_map1
+/home/eisa/autoware_map/maps/wtb_map1
 ```
 
 这个目录至少应包含：
@@ -128,7 +128,7 @@ ros2 topic echo /vehicle/status/velocity_status --once
 ### 6.4 地图路径
 
 ```bash
-ls /home/eisa/autoware_map/maps/wvcsc_map1
+ls /home/eisa/autoware_map/maps/wtb_map1
 ```
 
 ### 6.5 ROS 2 domain
@@ -150,9 +150,9 @@ source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
 source ~/Wtbcar_autoware_nav2/install/setup.bash
 ros2 launch autoware_launch autoware.launch.xml \
-  map_path:=/home/eisa/autoware_map/maps/wvcsc_map1 \
-  vehicle_model:=wvcsc_vehicle \
-  sensor_model:=wvcsc_sensor_kit \
+  map_path:=/home/eisa/autoware_map/maps/wtb_map1 \
+  vehicle_model:=wtb_vehicle \
+  sensor_model:=wtb_sensor_kit \
   data_path:=/home/eisa/autoware_data
 ```
 
@@ -261,7 +261,7 @@ ros2 topic hz /imu
 echo $LD_LIBRARY_PATH | tr ':' '\n' | grep acados
 ```
 
-## 11. 关于 `wvcsc_autoware_bringup`
+## 11. 关于 `wtb_autoware_bringup`
 
 当前结论：
 
@@ -272,7 +272,7 @@ echo $LD_LIBRARY_PATH | tr ':' '\n' | grep acados
 现在的推荐结构是：
 
 - `autoware_launch`：唯一正式入口
-- `wvcsc_vehicle_launch`：车辆相关 launch 与 env hook
-- `wvcsc_sensor_kit_launch`：传感器相关 launch 与占位心跳
+- `wtb_vehicle_launch`：车辆相关 launch 与 env hook
+- `wtb_sensor_kit_launch`：传感器相关 launch 与占位心跳
 - `my_navigation2`：过渡地图工具
 - `src/docs/`：唯一对外文档目录

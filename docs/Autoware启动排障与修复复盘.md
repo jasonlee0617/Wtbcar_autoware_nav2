@@ -2,16 +2,16 @@
 
 ## 1. 问题背景
 
-WVCSC 实车最终目标是直接使用官方命令启动：
+WTB 实车最终目标是直接使用官方命令启动：
 
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/autoware/install/setup.bash
 source ~/Wtbcar_autoware_nav2/install/setup.bash
 ros2 launch autoware_launch autoware.launch.xml \
-  map_path:=/home/eisa/autoware_map/maps/wvcsc_map1 \
-  vehicle_model:=wvcsc_vehicle \
-  sensor_model:=wvcsc_sensor_kit \
+  map_path:=/home/eisa/autoware_map/maps/wtb_map1 \
+  vehicle_model:=wtb_vehicle \
+  sensor_model:=wtb_sensor_kit \
   data_path:=/home/eisa/autoware_data
 ```
 
@@ -45,7 +45,7 @@ ros2 launch autoware_launch autoware.launch.xml \
 
 ### 2.3 交通灯感知缺失
 
-WVCSC 当前没有真实交通灯识别链，但完整 Autoware 栈会检查：
+WTB 当前没有真实交通灯识别链，但完整 Autoware 栈会检查：
 
 - `/perception/traffic_light_recognition/traffic_signals`
 
@@ -53,7 +53,7 @@ WVCSC 当前没有真实交通灯识别链，但完整 Autoware 栈会检查：
 
 ### 2.4 控制模式链路不完整
 
-`wvcsc_vehicle_interface` 之前缺少：
+`wtb_vehicle_interface` 之前缺少：
 
 - `/control/control_mode_request` 服务
 - `/vehicle/status/control_mode` 状态链
@@ -87,7 +87,7 @@ WVCSC 当前没有真实交通灯识别链，但完整 Autoware 栈会检查：
 - EKF 融合条件改善
 - 底盘反馈更适合定位和状态链使用
 
-### 3.3 `wvcsc_vehicle_interface`
+### 3.3 `wtb_vehicle_interface`
 
 修改目标：
 
@@ -100,7 +100,7 @@ WVCSC 当前没有真实交通灯识别链，但完整 Autoware 栈会检查：
 
 - Autoware 能真正完成“接管控制 -> 下发控制命令 -> 底盘执行”这条链
 
-### 3.4 `wvcsc_sensor_kit_launch`
+### 3.4 `wtb_sensor_kit_launch`
 
 修改目标：
 
@@ -149,7 +149,7 @@ WVCSC 当前没有真实交通灯识别链，但完整 Autoware 栈会检查：
 
 表现：
 
-- 不再需要 `wvcsc.launch.xml`
+- 不再需要 `wtb.launch.xml`
 - 直接使用官方 `autoware.launch.xml` 即可启动整套运行链
 
 ## 5. 最终状态
@@ -161,18 +161,18 @@ WVCSC 当前没有真实交通灯识别链，但完整 Autoware 栈会检查：
 - 运行环境自动具备 `ROS_DOMAIN_ID=88`
 - 控制模式链路已补齐
 - 交通灯 topic 已有心跳占位
-- `wvcsc_autoware_bringup` 不再作为正式主入口保留
+- `wtb_autoware_bringup` 不再作为正式主入口保留
 
 ## 6. 涉及的关键模块
 
 - `fdilink_ahrs_ROS2`
 - `wtb_car_driver`
-- `wvcsc_vehicle_interface`
-- `wvcsc_sensor_kit_launch`
-- `wvcsc_vehicle_launch` 中的新环境钩子
+- `wtb_vehicle_interface`
+- `wtb_sensor_kit_launch`
+- `wtb_vehicle_launch` 中的新环境钩子
 
 ## 7. 后续建议
 
 1. 继续以官方 `autoware.launch.xml` 作为唯一主入口  
 2. 把 `src/docs/` 作为唯一维护文档目录  
-3. `wvcsc_autoware_bringup` 仅保留迁移壳层，待引用清理完成后删除  
+3. `wtb_autoware_bringup` 仅保留迁移壳层，待引用清理完成后删除  

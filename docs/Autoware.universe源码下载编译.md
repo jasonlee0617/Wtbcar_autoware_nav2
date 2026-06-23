@@ -1,6 +1,6 @@
 ## 1.3 工控机编译：清理旧环境并重新编译
 
-适用于 WVCSC 工控机 `/home/eisa/autoware` 已经编译过，但中途出现过卡死、中断、CMake 缓存污染、包残缺安装等情况。
+适用于 WTB 工控机 `/home/eisa/autoware` 已经编译过，但中途出现过卡死、中断、CMake 缓存污染、包残缺安装等情况。
 
 ### 1.3.1 清理旧编译产物
 
@@ -95,7 +95,7 @@ ros2 launch autoware_launch planning_simulator.launch.xml \
   sensor_model:=sample_sensor_kit
 ```
 
-WVCSC 工作区运行前 source 顺序：
+WTB 工作区运行前 source 顺序：
 
 ```bash
 cd /home/eisa/Wtbcar_autoware_nav2
@@ -104,9 +104,9 @@ source /home/eisa/autoware/install/setup.bash
 source install/setup.bash
 ```
 
-然后再启动 WVCSC 实车链，例如：
+然后再启动 WTB 实车链，例如：
 
 ```bash
-ros2 launch wvcsc_autoware_bringup hybrid_real_vehicle.launch.xml \
-  map_path:=/home/eisa/autoware_data/maps/wvcsc_map \
+ros2 launch wtb_autoware_bringup hybrid_real_vehicle.launch.xml \
+  map_path:=/home/eisa/autoware_data/maps/wtb_map \
   rviz:=true

@@ -1,0 +1,8 @@
+base_link:
+  sensor_kit_base_link:
+    x: 0.41    # wheel_base / 2.0: forward from rear-axle base_link to body center
+    y: 0.0
+    z: 0.66    # base_link_to_body_center_z: up from ground to body/sensor-kit center
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0

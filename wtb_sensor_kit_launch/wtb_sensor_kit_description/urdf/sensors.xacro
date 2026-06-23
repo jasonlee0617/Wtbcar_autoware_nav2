@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<robot name="vehicle" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:arg name="config_dir" default="$(find wtb_sensor_kit_description)/config"/>
+  <xacro:property name="sensors_calibration" value="${xacro.load_yaml('$(arg config_dir)/sensors_calibration.yaml')}"/>
+
+  <xacro:macro name="sensor_kit_macro" params="parent x y z roll pitch yaw">
+    <xacro:property name="sensor_kit_calibration" value="${xacro.load_yaml('$(arg config_dir)/sensor_kit_calibration.yaml')}"/>
+    <xacro:property name="sensor_kit_base_link" value="sensor_kit_base_link"/>
+
+    <joint name="${sensor_kit_base_link}_joint" type="fixed">
+      <origin xyz="${x} ${y} ${z}" rpy="${roll} ${pitch} ${yaw}"/>
+      <parent link="${parent}"/>
+      <child link="${sensor_kit_base_link}"/>
+    </joint>
+    <link name="${sensor_kit_base_link}"/>
+
+    <joint name="laser_joint" type="fixed">
+      <origin
+        xyz="${sensor_kit_calibration['sensor_kit_base_link']['laser']['x']} ${sensor_kit_calibration['sensor_kit_base_link']['laser']['y']} ${sensor_kit_calibration['sensor_kit_base_link']['laser']['z']}"
+        rpy="${sensor_kit_calibration['sensor_kit_base_link']['laser']['roll']} ${sensor_kit_calibration['sensor_kit_base_link']['laser']['pitch']} ${sensor_kit_calibration['sensor_kit_base_link']['laser']['yaw']}"
+      />
+      <parent link="${sensor_kit_base_link}"/>
+      <child link="laser"/>
+    </joint>
+    <link name="laser">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.08" length="0.15"/>
+        </geometry>
+        <material name="laser_gray">
+          <color rgba="0.5 0.5 0.5 1"/>
+        </material>
+      </visual>
+    </link>
+
+    <joint name="gyro_link_joint" type="fixed">
+      <origin
+        xyz="${sensor_kit_calibration['sensor_kit_base_link']['gyro_link']['x']} ${sensor_kit_calibration['sensor_kit_base_link']['gyro_link']['y']} ${sensor_kit_calibration['sensor_kit_base_link']['gyro_link']['z']}"
+        rpy="${sensor_kit_calibration['sensor_kit_base_link']['gyro_link']['roll']} ${sensor_kit_calibration['sensor_kit_base_link']['gyro_link']['pitch']} ${sensor_kit_calibration['sensor_kit_base_link']['gyro_link']['yaw']}"
+      />
+      <parent link="${sensor_kit_base_link}"/>
+      <child link="gyro_link"/>
+    </joint>
+    <link name="gyro_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.1 0.1 0.001"/>
+        </geometry>
+        <material name="gyro_gray">
+          <color rgba="0.5 0.5 0.5 1"/>
+        </material>
+      </visual>
+    </link>
+  </xacro:macro>
+
+  <xacro:sensor_kit_macro
+    parent="base_link"
+    x="${sensors_calibration['base_link']['sensor_kit_base_link']['x']}"
+    y="${sensors_calibration['base_link']['sensor_kit_base_link']['y']}"
+    z="${sensors_calibration['base_link']['sensor_kit_base_link']['z']}"
+    roll="${sensors_calibration['base_link']['sensor_kit_base_link']['roll']}"
+    pitch="${sensors_calibration['base_link']['sensor_kit_base_link']['pitch']}"
+    yaw="${sensors_calibration['base_link']['sensor_kit_base_link']['yaw']}"
+  />
+</robot>

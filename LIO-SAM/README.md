@@ -1,15 +1,15 @@
 # LIO-SAM
 
-## WVCSC workspace note
+## WTB workspace note
 
 In `Wtbcar_autoware_nav2`, this package is used first as a **3D mapping toolchain**, not as the default online localization backend for `full_real_vehicle.launch.xml`.
 
-Recommended WVCSC entrypoints:
+Recommended WTB entrypoints:
 
-- Live mapping: `ros2 launch lio_sam run_wvcsc_mapping.launch.py`
-- Offline mapping: `ros2 launch lio_sam run_wvcsc_offline_mapping.launch.py`
+- Live mapping: `ros2 launch lio_sam run_wtb_mapping.launch.py`
+- Offline mapping: `ros2 launch lio_sam run_wtb_offline_mapping.launch.py`
 
-Legacy wheeltec-style launch files such as `run.launch.py`, `run_usegnss.launch.py`, and the launch files under `launch/include/` are kept as historical references, but they are no longer the preferred runtime entrypoints for WVCSC.
+Legacy wheeltec-style launch files such as `run.launch.py`, `run_usegnss.launch.py`, and the launch files under `launch/include/` are kept as historical references, but they are no longer the preferred runtime entrypoints for WTB.
 
 **A real-time lidar-inertial odometry package. We strongly recommend the users read this document thoroughly and test the package with the provided dataset first. A video of the demonstration of the method can be found on [YouTube](https://www.youtube.com/watch?v=A0H8CoORZJU).**
 

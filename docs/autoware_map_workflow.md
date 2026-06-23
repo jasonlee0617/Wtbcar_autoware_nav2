@@ -1,8 +1,8 @@
-# WVCSC Autoware 地图准备与转换
+# WTB Autoware 地图准备与转换
 
 本文档只关注两件事：
 
-1. 如何生产 `wvcsc_map1` 的正式地图资产  
+1. 如何生产 `wtb_map1` 的正式地图资产  
 2. 如何区分正式建图和临时 fake map 联调  
 
 如果你想看正式实车部署，请看：
@@ -14,7 +14,7 @@
 当前实车运行统一使用：
 
 ```text
-/home/eisa/autoware_map/maps/wvcsc_map1
+/home/eisa/autoware_map/maps/wtb_map1
 ```
 
 建议目录内容：
@@ -53,7 +53,7 @@ source /opt/ros/humble/setup.bash
 source /home/eisa/autoware/install/setup.bash
 source /home/eisa/Wtbcar_autoware_nav2/install/setup.bash
 
-ros2 launch lio_sam run_wvcsc_mapping.launch.py \
+ros2 launch lio_sam run_wtb_mapping.launch.py \
   launch_hardware:=true \
   launch_rviz:=false
 ```
@@ -65,7 +65,7 @@ source /opt/ros/humble/setup.bash
 source /home/eisa/autoware/install/setup.bash
 source /home/eisa/Wtbcar_autoware_nav2/install/setup.bash
 
-ros2 launch lio_sam run_wvcsc_offline_mapping.launch.py \
+ros2 launch lio_sam run_wtb_offline_mapping.launch.py \
   launch_rviz:=false
 ```
 
@@ -104,13 +104,13 @@ ros2 service list | grep save_map
 
 ```bash
 ros2 service call /lio_sam/save_map lio_sam/srv/SaveMap \
-  "{resolution: 0.2, destination: '/home/eisa/autoware_map/maps/wvcsc_map1'}"
+  "{resolution: 0.2, destination: '/home/eisa/autoware_map/maps/wtb_map1'}"
 ```
 
 保存后检查：
 
 ```bash
-ls -lh /home/eisa/autoware_map/maps/wvcsc_map1
+ls -lh /home/eisa/autoware_map/maps/wtb_map1
 ```
 
 ## 5. 地图验收标准
@@ -175,7 +175,7 @@ mgrs_grid: 54SVE
 ```bash
 ros2 run my_navigation2 pgm_to_fake_pcd.py \
   --yaml /home/eisa/Wtbcar_autoware_nav2/src/my_navigation2/maps/map_new.yaml \
-  --output /home/eisa/autoware_map/maps/wvcsc_map1/pointcloud_map.pcd
+  --output /home/eisa/autoware_map/maps/wtb_map1/pointcloud_map.pcd
 ```
 
 需要降采样时：
@@ -183,7 +183,7 @@ ros2 run my_navigation2 pgm_to_fake_pcd.py \
 ```bash
 ros2 run my_navigation2 pgm_to_fake_pcd.py \
   --yaml /home/eisa/Wtbcar_autoware_nav2/src/my_navigation2/maps/map_new.yaml \
-  --output /home/eisa/autoware_map/maps/wvcsc_map1/pointcloud_map.pcd \
+  --output /home/eisa/autoware_map/maps/wtb_map1/pointcloud_map.pcd \
   --sample-step 2
 ```
 
@@ -201,4 +201,4 @@ fake pcd 本质上是二维栅格边界的平面挤压：
 2. 制作最小可用 `lanelet2_map.osm`
 3. 补齐 `map_projector_info.yaml`
 4. 补齐 `map_config.yaml`
-5. 用正式地图目录 `/home/eisa/autoware_map/maps/wvcsc_map1` 做实车联调
+5. 用正式地图目录 `/home/eisa/autoware_map/maps/wtb_map1` 做实车联调

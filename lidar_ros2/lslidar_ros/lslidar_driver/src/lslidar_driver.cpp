@@ -507,8 +507,8 @@ namespace lslidar_driver {
         }
 
         pc_msg.header.frame_id = frame_id;
-        pc_msg.header.stamp = rclcpp::Time(sweep_end_time * 1e9);
-        // pc_msg.header.stamp = this->get_clock()->now();
+        pc_msg.header.stamp = this->get_clock()->now();
+        // pc_msg.header.stamp = rclcpp::Time(sweep_end_time * 1e9);
         pointcloud_pub->publish(std::move(pc_msg));
 
         return;
@@ -517,7 +517,7 @@ namespace lslidar_driver {
     void LslidarDriver::publishScan() {
         std::unique_lock<std::mutex> lock(pointcloud_lock);
         scan_msg_bak->header.frame_id = frame_id;
-        scan_msg_bak->header.stamp = rclcpp::Time(sweep_end_time * 1e9);
+        scan_msg_bak->header.stamp = this->get_clock()->now();
         scan_pub->publish(std::move(scan_msg_bak));
     }
 

@@ -111,7 +111,8 @@ private:
     }
 
     sensor_msgs::msg::PointCloud2 output;
-    output.header = input->header;
+    output.header.frame_id = input->header.frame_id;
+    output.header.stamp = this->get_clock()->now();
     output.height = input->height;
     output.width = input->width;
     output.is_bigendian = input->is_bigendian;

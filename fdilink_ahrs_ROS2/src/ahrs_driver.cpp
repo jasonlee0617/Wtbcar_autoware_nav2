@@ -69,9 +69,18 @@ ahrsBringup::ahrsBringup()
   this->declare_parameter<std::int64_t>("serial_baud_",921600);
   this->get_parameter("serial_baud_", serial_baud_);  
 
+  this->declare_parameter<int>("serial_timeout_", 50);
+  this->get_parameter("serial_timeout_", serial_timeout_);
+
   load_covariance("imu_orientation_covariance", imu_orientation_covariance_);
   load_covariance("imu_angular_velocity_covariance", imu_angular_velocity_covariance_);
   load_covariance("imu_linear_acceleration_covariance", imu_linear_acceleration_covariance_);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "FDILink AHRS config: port=%s baud=%d timeout_ms=%d imu_topic=%s imu_frame_id=%s debug=%s",
+    serial_port_.c_str(), serial_baud_, serial_timeout_, imu_topic.c_str(),
+    imu_frame_id_.c_str(), if_debug_ ? "true" : "false");
 
 
   
@@ -155,13 +164,32 @@ void ahrsBringup::processLoop()  // 数据处理过程
       std::cout << std::endl;
       std::cout << "check_head: " << std::hex << (int)check_head[0] << std::dec << std::endl;
     }
+    if (head_s != 1)
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "No bytes read from serial port %s at %d baud. Check IMU power, port, baudrate, and output mode.",
+        serial_port_.c_str(), serial_baud_);
+      continue;
+    }
     if (check_head[0] != FRAME_HEAD)  // 验证帧头是否为正确的起始字节
     {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Serial data is present but does not match FDILink frame header 0x%02X. Last byte: 0x%02X. Check baudrate/protocol.",
+        FRAME_HEAD, check_head[0]);
       continue;  // 帧头不正确，继续读取下一个字节
     }
     //check head type   检查数据类型
     uint8_t head_type[1] = {0xff};  // 数据类型检查缓冲区
     size_t type_s = serial_.read(head_type, 1);  // 读取数据类型字节
+    if (type_s != 1)
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Timed out while reading FDILink frame type from %s.", serial_port_.c_str());
+      continue;
+    }
     if (if_debug_)
     {
       std::cout << "head_type:  " << std::hex << (int)head_type[0] << std::dec << std::endl;  // 调试模式下打印数据类型
@@ -174,6 +202,13 @@ void ahrsBringup::processLoop()  // 数据处理过程
     //check head length    检查对应数据类型的长度是否符合
     uint8_t check_len[1] = {0xff};  // 数据长度检查缓冲区
     size_t len_s = serial_.read(check_len, 1);  // 读取数据长度字节
+    if (len_s != 1)
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Timed out while reading FDILink frame length from %s.", serial_port_.c_str());
+      continue;
+    }
     if (if_debug_)
     {
       std::cout << "check_len: "<< std::dec << (int)check_len[0]  << std::endl;  // 调试模式下打印数据长度

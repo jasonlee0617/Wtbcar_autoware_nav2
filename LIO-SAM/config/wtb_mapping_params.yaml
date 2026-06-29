@@ -9,7 +9,7 @@
 
     # Frames
     lidarFrame: "laser"
-    baselinkFrame: "base_footprint"
+    baselinkFrame: "base_link"
     odometryFrame: "odom"
     mapFrame: "map"
     publishOdometryTf: false
@@ -25,7 +25,7 @@
     savePCDDirectory: "/autoware_data/maps/wtb_lio_sam/"
 
     # Sensor Settings
-    sensor: velodyne
+    sensor: robosense
     N_SCAN: 16
     Horizon_SCAN: 1500
     downsampleRate: 1
@@ -41,9 +41,10 @@
     imuRPYWeight: 0.01
 
     # IMU -> LiDAR extrinsic, derived from the current WTB sensor model:
-    # base_link -> gyro_link = (0.0, 0.0, -0.40)
-    # base_link -> laser     = (0.36, 0.0, 0.50)
-    extrinsicTrans: [0.36, 0.0, 0.90]
+    # base_link -> gyro_link = (0.41, 0.0, 0.26)
+    # base_link -> laser     = (0.77, 0.0, 1.60)
+    # gyro_link -> laser     = (0.36, 0.0, 1.34)
+    extrinsicTrans: [0.36, 0.0, 1.34]
     extrinsicRot: [1.0, 0.0, 0.0,
                    0.0, 1.0, 0.0,
                    0.0, 0.0, 1.0]

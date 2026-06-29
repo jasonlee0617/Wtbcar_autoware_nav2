@@ -7,8 +7,11 @@
     # The body box in wtb_car.xacro is 1.30 x 0.80 x 1.00, while the overall
     # vehicle width reaches 0.98 m when the wheel width is included.
     vehicle_width: 0.98
-    vehicle_length: 1.30
+    # vehicle_width: 0.80
+    vehicle_length: 1.20
+    # vehicle_length: 1.40
     vehicle_height: 1.00
+    # vehicle_height: 1.20
 
     # The visual wheel centers in wtb_car.xacro remain at x=+/-0.35, but the
     # real car uses a calibrated wheelbase of 0.82 m in wtb_car.
@@ -17,7 +20,7 @@
     wheel_radius: 0.20
     wheel_width: 0.12
 
-    max_steer_angle: 0.6109
+    max_steer_angle: 1.2109
     max_steer_angle_rate: 2.0
 
     max_velocity: 1.0

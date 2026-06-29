@@ -10,7 +10,10 @@
 
   <buildtool_depend>ament_cmake_auto</buildtool_depend>
 
-  <exec_depend>lslidar_driver</exec_depend>
+  <!-- OLD LSLiDAR driver dependency, kept as a rollback reference after RoboSense migration.
+  <exec_depend>lslidar_driver</exec_depend> -->
+  <exec_depend>rslidar_sdk</exec_depend>
+  <exec_depend>rslidar_msg</exec_depend>
   <exec_depend>nebula_sensor_driver</exec_depend>
   <depend>sensor_msgs</depend>
   <depend>tf2_ros</depend>

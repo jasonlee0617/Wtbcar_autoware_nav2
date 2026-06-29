@@ -9,7 +9,9 @@
     <push-ros-namespace namespace="lidar"/>
 
     <group if="$(var launch_driver)">
-      <include file="$(find-pkg-share wtb_common_sensor_launch)/launch/lslidar_cx_launch.py"/>
+      <!-- OLD LSLiDAR driver path, kept as a rollback reference after RoboSense migration.
+      <include file="$(find-pkg-share wtb_common_sensor_launch)/launch/lslidar_cx_launch.py"/> -->
+      <include file="$(find-pkg-share rslidar_sdk)/launch/start.py"/>
     </group>
 
     <group if="$(var launch_pointcloud_to_laserscan)">
@@ -17,7 +19,7 @@
         <remap from="cloud_in" to="/sensing/lidar/pointcloud_raw"/>
         <remap from="scan" to="/sensing/lidar/scan"/>
         <param name="target_frame" value="laser"/>
-        <param name="min_height" value="-0.75"/>
+        <param name="min_height" value="-1.6"/>
         <param name="max_height" value="0.50"/>
         <param name="transform_tolerance" value="1.0"/>
         <param name="angle_min" value="-3.1415926"/>
@@ -38,14 +40,34 @@
       <param name="input_topic" value="/sensing/lidar/pointcloud_raw"/>
       <param name="output_topic" value="/sensing/lidar/concatenated/pointcloud"/>
       <param name="use_sim_time" value="$(var use_sim_time)"/>
-    </node>
-    -->
+    </node> -->
+   
 
-    <!-- PointCloud transformer: laser→base_link TF + XYZIRC format + optional height filter -->
+    <!-- PointCloud transformer: laser -> base_link TF + XYZIRC format. -->
     <node pkg="wtb_common_sensor_launch" exec="point_cloud_transformer"
           name="wtb_pointcloud_transformer" output="screen">
       <param name="use_height_filter" value="false"/>
+      <param name="input_topic" value="/sensing/lidar/pointcloud_raw"/>
+      <param name="output_topic" value="/sensing/lidar/concatenated/pointcloud"/>
       <param name="use_sim_time" value="$(var use_sim_time)"/>
     </node>
+
+    <!-- Remove only near-center ego reflections before obstacle segmentation and obstacle_stop use the cloud. -->
+    <!-- <node pkg="autoware_pointcloud_preprocessor" exec="crop_box_filter_node"
+          name="wtb_self_crop_box_filter" output="screen">
+      <remap from="input" to="/sensing/lidar/transformed/pointcloud"/>
+      <remap from="output" to="/sensing/lidar/concatenated/pointcloud"/>
+      <param name="input_frame" value="base_link"/>
+      <param name="output_frame" value="base_link"/>
+      <param name="negative" value="true"/>
+      <param name="min_x" value="-0.85"/>
+      <param name="max_x" value="0.55"/>
+      <param name="min_y" value="-0.50"/>
+      <param name="max_y" value="0.50"/>
+      <param name="min_z" value="0.55"/>
+      <param name="max_z" value="1.20"/>
+      <param name="processing_time_threshold_sec" value="0.01"/>
+      <param name="use_sim_time" value="$(var use_sim_time)"/>
+    </node> -->
   </group>
 </launch>

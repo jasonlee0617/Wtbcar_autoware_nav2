@@ -1,7 +1,7 @@
 wtb_vehicle_interface:
   ros__parameters:
     max_speed: 1.0
-    max_steering_angle: 0.6109
+    max_steering_angle: 1.2109
     command_timeout_sec: 0.5
     publish_twist_cmd: true
     twist_cmd_topic: /twist_cmd

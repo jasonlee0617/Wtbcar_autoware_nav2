@@ -34,12 +34,12 @@ struct RobosensePointXYZIRT {
      PCL_ADD_POINT4D;
      PCL_ADD_INTENSITY;
      uint16_t ring;
-     float time;
+     double timestamp;
      EIGEN_MAKE_ALIGNED_OPERATOR_NEW
  } EIGEN_ALIGN16;
  POINT_CLOUD_REGISTER_POINT_STRUCT (RobosensePointXYZIRT,
      (float, x, x) (float, y, y) (float, z, z) (float, intensity, intensity)
-     (uint16_t, ring, ring) (float, time, time)
+     (uint16_t, ring, ring) (double, timestamp, timestamp)
  )
 
 // Use the Velodyne point format as a common representation
@@ -244,6 +244,11 @@ public:
         // convert cloud
         currentCloudMsg = std::move(cloudQueue.front());
         cloudQueue.pop_front();
+
+        // LIO-SAM deskew expects per-point time relative to this cloud stamp.
+        cloudHeader = currentCloudMsg.header;
+        const double cloudStampSec = stamp2Sec(cloudHeader.stamp);
+
         if (sensor == SensorType::VELODYNE || sensor == SensorType::LIVOX)
         {
             pcl::moveFromROSMsg(currentCloudMsg, *laserCloudIn);
@@ -281,7 +286,7 @@ public:
                 dst.z = src.z;
                 dst.intensity = src.intensity;
                 dst.ring = src.ring;
-                dst.time = src.time * 1e-9f;
+                dst.time = static_cast<float>(src.timestamp - cloudStampSec);
             }
         }
         else
@@ -291,8 +296,6 @@ public:
         }
 
         // get timestamp
-        cloudHeader = currentCloudMsg.header;
-        double cloudStampSec = stamp2Sec(cloudHeader.stamp);
         float pcl_first_time = laserCloudIn->points.front().time;
         float pcl_last_time  = laserCloudIn->points.back().time;
         if (pcl_first_time < -1e-6)

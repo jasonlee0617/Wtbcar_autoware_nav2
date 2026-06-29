@@ -6,7 +6,6 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /Registered Raw Cloud1
         - /TF1
         - /TF1/Frames1
         - /TF1/Tree1
@@ -220,8 +219,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 7.8865556716918945
-        Min Value: -3.498526096343994
+        Max Value: 8.518539428710938
+        Min Value: -4.3455657958984375
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -289,30 +288,30 @@ Visualization Manager:
       Enabled: true
       Frame Timeout: 15
       Frames:
-        All Enabled: true
+        All Enabled: false
         base_footprint:
-          Value: true
+          Value: false
         base_link:
           Value: true
         gyro_link:
-          Value: true
+          Value: false
         laser:
           Value: true
         left_front_link:
-          Value: true
+          Value: false
         left_wheel_link:
-          Value: true
+          Value: false
         map:
           Value: true
         odom:
-          Value: true
+          Value: false
         right_front_link:
-          Value: true
+          Value: false
         right_wheel_link:
-          Value: true
+          Value: false
         sensor_kit_base_link:
-          Value: true
-      Marker Scale: 1
+          Value: false
+      Marker Scale: 10
       Name: TF
       Show Arrows: true
       Show Axes: true
@@ -370,7 +369,8 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        loop_edges: true
+        loop_nodes: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -508,7 +508,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: odom
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:
@@ -551,7 +551,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 33.15520477294922
+      Distance: 15.149179458618164
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -566,10 +566,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.9097962379455566
+      Pitch: 0.9097973108291626
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.200408935546875
+      Yaw: 3.1686012744903564
     Saved: ~
 Window Geometry:
   Displays:

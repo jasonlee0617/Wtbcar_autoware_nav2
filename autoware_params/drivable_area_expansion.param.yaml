@@ -1,0 +1,105 @@
+/**:
+  ros__parameters:
+    # ==========================================================================
+    # 静态扩展参数 (Static expansion)
+    # 这些参数控制在无动态因素时，可行驶区域相对于参考路径边界的固定偏移量。
+    # 正值会向外扩展可行驶区域，负值会向内收缩。
+    # ==========================================================================
+    # drivable_area_right_bound_offset: 0.0
+    # drivable_area_left_bound_offset: 0.0
+    # 右侧边界偏移量，向右侧扩展可行驶区域 [m]
+    drivable_area_right_bound_offset: 1.0
+
+    # 左侧边界偏移量，向左侧扩展可行驶区域 [m]
+    drivable_area_left_bound_offset: 1.5
+
+    # 在扩展可行驶区域时需要跳过的边界类型列表。
+    # 例如 'road_border' 表示道路边界不参与扩展，避免将可行驶区域画到道路边界之外。
+    drivable_area_types_to_skip: [road_border]
+
+    # ==========================================================================
+    # 动态扩展参数 (Dynamic expansion by using the path curvature)
+    # 利用路径曲率动态扩展可行驶区域，使车辆在弯道处有足够的侧向空间。
+    # ==========================================================================
+    dynamic_expansion:
+      # 是否启用动态扩展
+      enabled: true
+
+      # 是否输出运行时间信息（调试用）
+      print_runtime: false
+
+      # 可行驶区域能扩展的最大距离 [m]，0.0 表示不限制。
+      # 限制扩展量可以防止在极端曲率下过度扩展。
+      max_expansion_distance: 0.0
+
+      # 两个连续边界点之间的最小间隔 [m]（扩展前）
+      # 用于保证边界点的密度足够进行平滑和曲率计算。
+      min_bound_interval: 1.0
+
+      # 平滑相关参数
+      smoothing:
+        # 曲率平滑的滑动窗口大小。
+        # 使用移动平均对路径曲率进行滤波，避免因噪声导致扩展量剧烈变化。
+        curvature_average_window: 3
+
+        # 边界横向距离沿弧长的最大变化率 [m/m]。
+        # 限制相邻两点的扩展量差异，使可行驶区域边界变化更平缓。
+        max_bound_rate: 1.0
+
+        # 初始应用扩展距离的弧长范围 [m]。
+        # 在路径弧长方向上，扩展量在该范围内从零逐渐增加到目标值，实现平滑过渡。
+        arc_length_range: 2.0
+
+      # 自车尺寸修正参数
+      ego:
+        # 额外增加的轴距 [m]，用于扩大车辆在弯道中的投影长度。
+        extra_wheelbase: 0.0
+
+        # 额外增加的前悬长度 [m]。
+        extra_front_overhang: 0.0
+
+        # 额外增加的车辆宽度 [m]，用于扩大车辆投影的侧向范围。
+        extra_width: 0.0
+
+      # 对象排除参数
+      # 当扩展的可行驶区域与静态或动态障碍物冲突时，是否避免在其上扩展。
+      object_exclusion:
+        # 如果为 true，不在静态物体上扩展可行驶区域。
+        exclude_static: false
+
+        # 如果为 true，不在动态物体的预测路径上扩展可行驶区域。
+        exclude_dynamic: false
+
+        # 判断静态物体的速度阈值 [m/s]，速度低于该值的物体被视为静态。
+        th_stopped_object_velocity: 1.0
+
+        # 物体 footprint 周围的安全裕度 [m]
+        safety_margin:
+          front: 0.75   # 前侧裕度
+          rear: 0.75    # 后侧裕度
+          left: 0.75    # 左侧裕度
+          right: 0.75   # 右侧裕度
+
+      # 路径预处理参数
+      # 控制用于投影自车轮廓的路径如何进行重采样和重用。
+      path_preprocessing:
+        # 沿路径投影自车轮廓的最大弧长 [m]，0.0 表示不限制。
+        # 防止在超长路径上计算量过大。
+        max_arc_length: 100.0
+
+        # 重采样间隔 [m]，如果大于 0.0，路径点将被均匀重采样到该间距。
+        # 0.0 表示直接使用原始路径点。
+        resample_interval: 2.0
+
+        # 路径变化重用阈值 [m]。
+        # 如果当前路径与上次计算的路径偏差小于该值，则重用之前计算的曲率，避免重复计算。
+        reuse_max_deviation: 0.5
+
+      # 避免跨越的线串类型
+      # 可行驶区域扩展时不应跨越的 lanelet 地图线串类型（如道路边界、路缘石）。
+      avoid_linestring:
+        types:
+          - road_border
+          - curbstone
+        # 与这些线串之间保持的最小距离 [m]。
+        distance: 0.0

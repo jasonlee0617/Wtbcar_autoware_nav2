@@ -1,0 +1,131 @@
+# ==============================================================================
+# voxel_grid_based_euclidean_cluster.param.yaml
+# 基于体素的欧几里得聚类（Voxel Grid Based Euclidean Cluster）参数。
+#
+# 本节点是 Autoware 感知 pipeline 中 clustering 模式的核心检测后端。
+# 处理流程：
+#   1. CropBox 预过滤 —— 裁剪出感兴趣区域（ROI），去掉明显无效的点
+#   2. 体素降采样 —— 将点云按 voxel_leaf_size 划分立方体格网
+#   3. 体素级聚类 —— 在体素空间做欧几里得聚类，而非逐点聚类
+#   4. 簇过滤 —— 按点数/体素数阈值筛除噪点和背景
+#   5. 输出 DetectedObjects —— 交给下游 shape_estimation 估计尺寸和朝向
+#
+# 与简单版 euclidean_cluster 的区别：
+#   - 本节点在体素粒度上聚类（一个体素 = 一个聚类单元），大幅降低计算量
+#   - 多了一层"体素内点数过滤"逻辑，对稀疏噪点更稳健
+#   - 内置 CropBox，可限定 ROI
+#
+# 本文件由 sync-params workflow 管理。
+# Source 上游默认值已注释，WTB 实车覆盖值以当前生效值为准。
+# ==============================================================================
+/**:
+  ros__parameters:
+    # =========================================================================
+    # 1. 聚类核心参数
+    # =========================================================================
+
+    # ---- 聚类距离阈值 ----
+    # tolerance: 点云中两个体素之间的最大允许距离 [m]。
+    #   距离 ≤ tolerance → 归入同一个簇。
+    #   这是影响分割粒度的最关键参数。
+    #
+    #   WTB 调优记录：
+    #     0.35m (过小) → 低线束/稀疏点云下障碍物被拆成多个小 UNKNOWN 碎片
+    #     0.5m  (当前) → 保证障碍物形成稳定对象；若墙体粘连再回调到 0.4
+    #     0.7m  (默认) → 对 16 线 LiDAR 在园区场景偏大，容易欠分割
+    # tolerance: 0.7
+    # 0.35 m 在实车低线束/稀疏点云下容易把一个障碍拆成多个小 UNKNOWN 碎片。
+    # 0.5 m 先保证前方障碍能形成稳定对象；若后续墙体粘连，再回调到 0.4。
+    tolerance: 0.7                                       # [m] 聚类距离阈值
+
+    # ---- 体素尺寸 ----
+    # voxel_leaf_size: 体素立方体的边长 [m]。
+    #   点云先被划分为该尺寸的体素网格，再在体素层级做聚类。
+    #   调大 → 更快的计算速度 + 更强的去噪，但空间分辨率降低
+    #   调小 → 更精细的聚类结果 + 更适合小目标，但计算更重
+    # voxel_leaf_size: 0.3                               # 默认值
+    voxel_leaf_size: 0.01                               # [m] WTB: 保持小目标形状稳定，避免过细导致碎片化
+
+    # ---- 体素内最少点数 ----
+    # min_points_number_per_voxel: 一个体素内至少要有多少个原始点，
+    #   该体素才被认为是"有效体素"参与聚类。
+    #   值 ≥ 2 → 有效过滤孤立噪点（如 LiDAR 鬼影、灰尘反射）
+    #   值 = 1 → 不丢任何信息，适合稀疏点云
+    min_points_number_per_voxel: 1                       # [-] 体素内最少点数
+
+    # ---- 簇大小过滤（点数维度） ----
+    # min_cluster_size: 一个簇至少包含多少个点才被保留。
+    #   低于此值的簇被丢弃（噪点过滤）。
+    #   WTB 降低到 4 是因为稀疏点云下小障碍物的点本来就少。
+    # min_cluster_size: 10                                # 默认值
+    min_cluster_size: 3                                  # [-] 最小簇点数
+
+    # max_cluster_size: 一个簇最多包含多少个体素才被保留。
+    #   超过此值的簇被视为背景（墙壁、整面楼体），直接丢弃。
+    max_cluster_size: 3000                               # [-] 最大簇体素数（this is the maximum number of voxels when clustered）
+
+    # =========================================================================
+    # 2. 体素级过滤 —— 针对大簇内部的噪点清理
+    # =========================================================================
+
+    # ---- 输出体素上限 ----
+    # max_voxel_cluster_for_output: 一个簇最多输出多少个体素。
+    #   超过此值的簇会被截断，防止一次性输出过大的点云。
+    max_voxel_cluster_for_output: 800                    # [-] 输出簇的体素上限（Maximum number of voxels in a cluster when outputted）
+
+    # ---- 体素级过滤豁免阈值 ----
+    # min_voxel_cluster_size_for_filtering: 体素数低于此值的簇，
+    #   不进行后续的 per-voxel 过滤（保留所有体素内的点）。
+    #   避免小目标被过度过滤导致漏检。
+    min_voxel_cluster_size_for_filtering: 1             # [-] 体素过滤豁免阈值，默认值65（Clusters below this number of voxels are exempt from per-voxel filtering）
+
+    # ---- 大簇体素内点数限制 ----
+    # max_points_per_voxel_in_large_cluster: 在大型簇（体素数 ≥ min_voxel_cluster_size_for_filtering）
+    #   中，每个体素最多保留多少个原始点。
+    #   超过此值的点被丢弃（降采样），减少大簇的计算量。
+    max_points_per_voxel_in_large_cluster: 20            # [-] 大簇中每体素最大点数（Max points allowed per voxel in a large cluster）
+
+    # ---- 高度参与聚类 ----
+    # use_height: 是否在聚类距离计算中纳入 Z 轴（高度）。
+    #   false → 仅 XY 平面（2D 体素聚类）。地面分割后推荐 false。
+    #   true  → XYZ 三维聚类。坡道、多层场景可能受益。
+    use_height: false                                    # [-] 是否使用高度
+
+    # ---- 输入坐标系 ----
+    # input_frame: 输入点云的参考坐标系。
+    #   用于 CropBox 过滤时确定 X/Y/Z 轴的指向。
+    input_frame: "base_link"                             # [-] 输入坐标系
+
+    # =========================================================================
+    # 3. CropBox 预过滤 —— 限定感兴趣区域 (ROI)
+    # =========================================================================
+    # 在聚类之前先裁剪点云，去掉明显不在检测范围内的点，减少后续计算量。
+    # 所有坐标均在 input_frame (base_link) 下：
+    #   X: 前向为正（车头方向）
+    #   Y: 左向为正
+    #   Z: 向上为正
+    # low height crop box filter param
+
+    # ---- XY 范围 ----
+    max_x: 200.0                                         # [m] 前向最远距离
+    min_x: -200.0                                        # [m] 后向最远距离
+    max_y: 200.0                                         # [m] 左侧最远距离
+    min_y: -200.0                                        # [m] 右侧最远距离
+
+    # ---- Z 范围（高度裁剪） ----
+    # max_z: 保留点的最高高度。高于此值的点被丢弃（树枝、路牌、天桥等）。
+    # min_z: 保留点的最低高度。低于此值的点被丢弃（地面以下的噪点）。
+    max_z: 5.0                                           # [m] 最高保留高度
+    # min_z: -10.0                                       # 默认值
+    min_z: -10.0                                         # [m] WTB: 更宽松，保留坡道下方点
+
+    # ---- 裁剪模式 ----
+    # negative: 裁剪模式。
+    #   false → 保留 box 内部的点（正常模式）
+    #   true  → 保留 box 外部的点（反向裁剪，用于去除自车点云）
+    negative: false                                      # [-] 正常裁剪模式
+
+    # ---- 性能阈值 ----
+    # processing_time_threshold_sec: 单帧处理时间超过此值会打印警告日志。
+    #   仅用于性能监控，不影响结果。
+    processing_time_threshold_sec: 0.01                  # [s] 处理时间告警阈值

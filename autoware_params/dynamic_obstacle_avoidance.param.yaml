@@ -1,0 +1,163 @@
+/**:
+  ros__parameters:
+    # ==========================================================================
+    # 动态避障模块 (dynamic_avoidance)
+    # 功能：根据周边运动物体的预测轨迹，生成横向偏移或可行驶区域约束，
+    #       使自车平滑地绕过动态障碍物。
+    # ==========================================================================
+    dynamic_avoidance:
+      # ------------------------------------------------------------------
+      # 通用设置 (common)
+      # ------------------------------------------------------------------
+      common:
+        # 是否启用调试信息输出（可视化、日志等）
+        # official default: enable_debug_info: false
+        enable_debug_info: true
+        # 是否使用地图中的斜线区域（hatched road markings）作为附加约束，
+        # 通常这类区域禁止车辆驶入，开启后避障路径会避免进入。
+        use_hatched_road_markings: true
+
+      # ------------------------------------------------------------------
+      # 目标物体筛选 (target_object)
+      # 定义哪些类型的物体会触发动态避障，以及它们被激活/停用的条件。
+      # ------------------------------------------------------------------
+      target_object:
+        # --- 参与避障的物体类型（true 表示开启） ---
+        car: true
+        truck: true
+        bus: true
+        trailer: true
+        # official default: unknown: false
+        unknown: false         # 未知类型，先关闭，避免静止/抖动 UNKNOWN 参与动态绕障
+        bicycle: true
+        motorcycle: true
+        pedestrian: true
+
+        # 考虑避障的物体速度范围 [m/s]
+        max_obstacle_vel: 100.0   # 最大速度，超过此速度的物体忽略
+        # official default: min_obstacle_vel: 0.0
+        min_obstacle_vel: 0.5     # 最小速度，低于此速度的物体忽略
+
+        # 进入动态避障状态所需的连续帧数。
+        # 物体需在连续多少帧满足条件后，才触发避障，防噪声。
+        # official default: successive_num_to_entry_dynamic_avoidance_condition: 5
+        successive_num_to_entry_dynamic_avoidance_condition: 5
+        # 退出动态避障状态所需的连续帧数。
+        # 物体连续多少帧不再满足条件后，才取消避障，防抖动。
+        # official default: successive_num_to_exit_dynamic_avoidance_condition: 1
+        successive_num_to_exit_dynamic_avoidance_condition: 5
+
+        # 物体相对于自车路径的横向偏移范围 [m]。
+        # 只有横向距离在该范围内的物体才被考虑。
+        min_obj_lat_offset_to_ego_path: 0.0  # 最小横向偏移
+        # official default: max_obj_lat_offset_to_ego_path: 1.0
+        max_obj_lat_offset_to_ego_path: 0.8
+
+        # ---- 切入物体 (cut_in_object) ----
+        # 针对从旁车道切入自车前方的物体。
+        cut_in_object:
+          min_time_to_start_cut_in: 1.0    # 预测开始切入所需的最小时间 [s]
+          min_lon_offset_ego_to_object: 0.0 # 自车与物体间的最小纵向距离 [m]
+          min_object_vel: 0.5              # 物体最低速度 [m/s]
+
+        # ---- 切出物体 (cut_out_object) ----
+        # 针对原本在自车路径上，然后横向离开的物体。
+        cut_out_object:
+          max_time_from_outside_ego_path: 2.0 # 物体离开自车路径后，仍将其视为切出物体的最大时间 [s]
+          min_object_lat_vel: 0.3            # 判断切出的最小横向速度 [m/s]
+          min_object_vel: 0.5                # 物体最低速度 [m/s]
+
+        # ---- 横穿物体 (crossing_object) ----
+        # 包括从前方横穿的行人、车辆，以及对向来车。
+        crossing_object:
+          min_overtaking_object_vel: 1.0       # 同向超越物体的最小速度 [m/s]
+          max_overtaking_object_angle: 1.05    # 同向物体被视为“横穿”的最大角度 [rad]（约60°）
+          min_oncoming_object_vel: 1.0         # 对向物体的最小速度 [m/s]
+          max_oncoming_object_angle: 0.523     # 对向物体被视为“横穿”的最大角度 [rad]（约30°）
+          max_pedestrian_crossing_vel: 0.8     # 行人横穿的最大速度 [m/s]
+
+        # ---- 前方物体 (front_object) ----
+        # 在自车路径正前方的物体。
+        front_object:
+          max_object_angle: 0.785             # 物体与自车航向的最大夹角 [rad]（45°）
+          min_object_vel: -0.5               # 最低速度 [m/s]，负值用于容忍停止车辆的速度噪声
+          max_ego_path_lat_cover_ratio: 0.3  # 物体覆盖自车路径的横向比例阈值。
+                                             # 若覆盖比例超过该值，该物体将被忽略（例如完全堵死道路时不再避让）
+
+        # ---- 停止物体 (stopped_object) ----
+        stopped_object:
+          max_object_vel: 0.5 # 速度低于此值的物体判定为停止 [m/s]
+
+      # ------------------------------------------------------------------
+      # 可行驶区域生成 (drivable_area_generation)
+      # 根据障碍物动态生成限制区域，使自车绕行。
+      # ------------------------------------------------------------------
+      drivable_area_generation:
+        # 是否扩展可行驶区域（与静态扩展配合）
+        # official default: expand_drivable_area: false
+        expand_drivable_area: true
+
+        # 多边形生成方法
+        # "ego_path_base": 基于自车路径生成
+        # "object_path_base": 基于物体路径生成
+        polygon_generation_method: "ego_path_base"
+
+        # 当使用 "object_path_base" 时的参数
+        object_path_base:
+          min_longitudinal_polygon_margin: 3.0 # 多边形沿物体轨迹方向的最小纵向余量 [m]
+
+        # 障碍物周围的横向偏移量 [m]，用于生成绕行区域
+        # official default: lat_offset_from_obstacle: 1.0
+        lat_offset_from_obstacle: 0.3
+
+        # 行人周围的额外安全距离 [m]
+        # official default: margin_distance_around_pedestrian: 2.0
+        margin_distance_around_pedestrian: 0.8
+
+        # 预测路径相关参数
+        predicted_path:
+          # 考虑预测路径的时间长度 [s]，即只使用未来这段时间内的预测
+          # official default: end_time_to_consider: 2.0
+          end_time_to_consider: 2.0
+          # 预测置信度阈值（非概率值），低于此值的预测被忽略
+          threshold_confidence: 0.0
+
+        # 允许的最大横向避让偏移量 [m]
+        # official default: max_lat_offset_to_avoid: 0.5
+        max_lat_offset_to_avoid: 0.7
+
+        # 物体横向偏移的最大允许时间 [s]，0.0 表示无延迟
+        max_time_for_object_lat_shift: 0.0
+
+        # 横向避让偏移的低通滤波器增益，使偏移变化平滑 (0~1)
+        lpf_gain_for_lat_avoid_to_offset: 0.9
+
+        # 自车横向运动限制（用于生成平滑轨迹）
+        # official default: max_ego_lat_acc: 0.3
+        max_ego_lat_acc: 0.3        # 最大横向加速度 [m/s²]
+        # official default: max_ego_lat_jerk: 0.3
+        max_ego_lat_jerk: 0.3       # 最大横向 jerk [m/s³]
+
+        # 自车开始横向偏移前的延迟时间 [s]，模拟驾驶员反应或系统滞后
+        # official default: delay_time_ego_shift: 1.0
+        delay_time_ego_shift: 0.5
+
+        # ---- 同向物体（超车）参数 (overtaking_object) ----
+        overtaking_object:
+          # 考虑碰撞的最大时间范围 [s]，超过此时间的碰撞忽略
+          max_time_to_collision: 40.0
+          # 开始避让动作前的准备时间 [s]
+          start_duration_to_avoid: 1.0
+          # 结束避让动作后的恢复时间 [s]
+          end_duration_to_avoid: 1.0
+          # 保持避让状态的最小持续时间 [s]，防止频繁退出
+          duration_to_hold_avoidance: 3.0
+
+        # ---- 对向物体（会车）参数 (oncoming_object) ----
+        oncoming_object:
+          # 最大碰撞时间 [s]，建议与超车对象一致，以减少对静止车辆的判断抖动
+          max_time_to_collision: 40.0
+          # 开始避让的准备时间 [s]
+          start_duration_to_avoid: 1.0
+          # 结束避让的恢复时间 [s]，此处设为 0 可能表示会车结束后立即恢复
+          end_duration_to_avoid: 0.0

@@ -1,0 +1,268 @@
+/**:
+  ros__parameters:
+    obstacle_stop:
+      # ============================================================================
+      # 障碍物停车模块 (Obstacle Stop Module)
+      # 功能：根据感知到的障碍物（点云、检测框），在轨迹上规划停车点，
+      #       使自车在障碍物前方安全停下。
+      # ============================================================================
+
+      option:
+        # 是否忽略正在穿越自车轨迹的障碍物（例如横向穿过的行人/车辆）
+        # 开启后，crossing 类型障碍物不会触发停车
+        ignore_crossing_obstacle: false
+        # 是否抑制突然急停。开启后，如果触发停车需要的减速度仍在 deceleration limit 内，
+        # 则视为"非突然停车"，不做特殊抑制
+        suppress_sudden_stop: false
+        # ignore_crossing_obstacle: false
+        # suppress_sudden_stop: true
+
+      # --------------------------------------------------------------------------
+      # 停车规划参数 (Stop Planning)
+      # --------------------------------------------------------------------------
+      stop_planning:
+        # 自车与障碍物之间的纵向停车距离 [m]
+        # stop_margin : 1.0
+        stop_margin : 1.8
+
+        # 目标点(gola)处的停车距离。该值不能超过 stop_margin [m]
+        # terminal_stop_margin : 1.0
+        terminal_stop_margin : 1.2
+
+        # 行为规划(behavior planner)插入的停车点处的最小停车距离 [m]
+        min_behavior_stop_margin: 1.0
+
+        # 行为规划停车点消失后，继续保持 min_behavior_stop_margin 的时间 [s]
+        # 防止停车点因短暂消失又出现导致的反复启停
+        behavior_stop_margin_hold_time: 2.0
+
+        # 对向来车的最大速度（取绝对值），超过此速度不再考虑对向停车 [m/s]
+        max_negative_velocity: -100.0
+
+        # 自车与移动中的对向障碍物之间的理想停车距离 [m]
+        stop_margin_opposing_traffic: 10.0
+
+        # 对向来车的有效减速度。设得越大，最终停车距离越接近上面的理想值 [m/s^2]
+        effective_deceleration_opposing_traffic: 4.0
+
+        # 停车决策触发前，条件需要持续满足的最短时间 [s]
+        # 防止瞬时检测噪声导致误停车
+        min_on_duration: 0.1
+
+        # 停车决策取消前，条件需要持续消失的最短时间 [s]
+        # 防止障碍物短暂消失导致反复启停
+        min_off_duration: 1.0
+
+        # 自车移动超过此距离后，才允许更新停车点位置 [m]
+        # 防止停车点在原地抖动
+        update_distance_th: 0.1
+
+        # 保持停车状态的最大自车速度阈值 [m/s]
+        # 自车速度低于此值认为已停车，保持刹车
+        hold_stop_velocity_threshold: 0.0001
+
+        # 当停车点位置变化超过此阈值时，解除停车保持状态 [m]
+        hold_stop_distance_threshold: 0.3
+
+        # 点云抑制的距离裕度 [m]
+        # 当点云障碍物在此距离内时，暂时不抑制该障碍物
+        pointcloud_suppression_distance_margin: 2.2
+
+        # 弯道停车参数
+        stop_on_curve:
+          # 是否允许在弯道接近停车的障碍物
+          enable_approaching: true
+          # enable_approaching: false
+          # 弯道上额外的停车距离 [m]
+          additional_stop_margin: 3.0
+          # 弯道上允许的最小停车距离 [m]
+          min_stop_margin: 3.0
+
+        # --------------------------------------------------------------------------
+        # 按物体类型指定的参数 (Type-Specified Parameters)
+        # 不同类型可以覆盖默认的减速限制等参数
+        # --------------------------------------------------------------------------
+        object_type_specified_params:
+          # 参数适用的物体类型列表
+          types:
+            - "default"
+            - "unknown"
+          # default: 如果某类型没有单独定义参数，则使用 common_param.yaml 中的 limit.min_acc
+          unknown:
+            # 覆盖 default 减速度限制 [m/s^2]。若无此定义，默认使用 common_param.yaml 的 limit.min_acc
+            limit_min_acc: -1.2
+            # 如果停车需要的减速度小于此值（绝对值），则不视为"突然停车" [m/s^2]
+            sudden_object_acc_threshold: -1.1
+            # 如果停车距离大于此值，则不视为"突然停车" [m]
+            sudden_object_dist_threshold: 1000.0
+            # 若为 true，当无法在 deceleration limit 内停车时，放弃停车（让车碾过去）
+            abandon_to_stop: false
+
+        # --------------------------------------------------------------------------
+        # RSS (Responsibility Sensitive Safety) 停车参数
+        # 基于 RSS 安全模型计算停车距离
+        # --------------------------------------------------------------------------
+        rss_params:
+          # 是否启用 RSS 停车
+          use_rss_stop: true
+          # 两轮车（自行车、摩托车）的假设减速度 [m/s^2]
+          two_wheel_objects_deceleration: -3.0
+          # 四轮机动车（轿车、卡车等）的假设减速度 [m/s^2]
+          vehicle_objects_deceleration: -1.2
+          # 无轮物体（行人、未知类型）的假设减速度 [m/s^2]
+          no_wheel_objects_deceleration: -10.0
+          # 点云障碍物的假设减速度 [m/s^2]
+          pointcloud_deceleration: -1.0
+          # 速度偏移量 [m/s]
+          # RSS 计算中，将自车速度减去此偏移，使停车更加保守
+          velocity_offset: -1.0
+
+        # 障碍物速度低于此值 → 使用其当前位置决定停车点（视为静止障碍物）[m/s]
+        obstacle_velocity_threshold_enter_fixed_stop: 3.0
+        # 障碍物速度高于此值 → 使用其刹车距离（若 use_rss_stop=true）决定停车点（视为移动障碍物）[m/s]
+        obstacle_velocity_threshold_exit_fixed_stop: 3.5
+
+      # ============================================================================
+      # 障碍物过滤参数 (Obstacle Filtering)
+      # 以下参数均可针对每种物体类型单独设置。如需覆盖默认值，请添加对应行。
+      # ============================================================================
+      obstacle_filtering:
+        # ---- 检查障碍物是否在自车覆盖区域内 ----
+        # 若为 true，检查障碍物是否落入自车 footprint（车体投影）内
+        check_inside:
+          default: true
+          pointcloud: true
+          unknown: true
+
+        # ---- 检查障碍物是否在自车覆盖区域外 ----
+        # 若为 true，检查障碍物是否在自车 footprint 之外（点云障碍物不支持）
+        check_outside:
+          default: true
+          unknown: false
+
+        # ---- 轨迹裁剪 ----
+        # 在停车点之后裁剪轨迹，减少不必要的计算
+        trim_trajectory:
+          # 是否启用轨迹裁剪
+          enable_trimming:
+            default: false
+            pointcloud: true
+          # 裁剪后保留的最小轨迹长度 [m]
+          min_trajectory_length: 30.0
+          # 刹车距离的缩放因子。轨迹在停车点 + braking_distance * scale_factor 处裁剪
+          braking_distance_scale_factor: 1.5
+
+        # ---- 横向裕度 ----
+        # 障碍物与自车 footprint 之间的横向安全距离
+        lateral_margin:
+          # 标称横向裕度 [m]
+          nominal:
+            default: 0.3
+            unknown: 0.3
+            pointcloud: 0.3
+          # 额外横向裕度
+          additional:
+            # 自车车轮偏离轨道时的额外裕度缩放因子
+            # 即使设为 0.0，规划器仍会考虑标称的偏离量
+            wheel_off_track_scale:
+              default: 0.0
+            # 判断障碍物是否为"移动障碍物"的速度阈值 [m/s]
+            # 点云障碍物始终被视为"停车障碍物"
+            is_moving_threshold_velocity: 0.5
+            # 静止障碍物的额外停车距离 [m]
+            is_stop_obstacle:
+              default: 0.0
+            # 移动障碍物的额外停车距离 [m]
+            is_moving_obstacle:
+              default: 0.0
+
+        # ---- 碰撞检测高度范围 ----
+        # 从地面起算的高度范围，在此范围内的障碍物才会参与碰撞检测 [m]
+        detection_height:
+          # 检测高度上限
+          top_limit:
+            default: 50.0   # 默认几乎不限制
+            unknown: 1.0    # 未知类型限制 1m（过滤掉头顶以上的噪点）
+          # 检测高度下限（负值表示地面以下）
+          bottom_limit: -0.5
+
+        # 考虑停车的最小物体长度 [m]。低于此长度的物体不触发停车
+        min_object_length: 0.1
+
+        # 计算到达碰撞点时间的最小速度裕度 [m/s]
+        # 用于避免自车速度接近 0 时 TTC 计算发散
+        min_velocity_to_reach_collision_point: 2.0
+
+        # 最靠近的停车障碍物保持时间上限 [s]
+        # 超过此时间强制更新为新的最近障碍物
+        stop_obstacle_hold_time_threshold : 1.0
+
+        # ---- 外侧障碍物切入预测 (Outside Obstacle / Cut-in Prediction) ----
+        # 预测当前在自车轨迹外侧的障碍物是否会切入轨迹
+        # 点云障碍物不支持此功能
+        outside_obstacle:
+          # 预测时间范围 [s]
+          estimation_time_horizon: 1.0
+          # 判断障碍物为"可能切入"的最大横向速度 [m/s]
+          max_lateral_velocity: 5.0
+          # 判断障碍物为"可能切入"的最小纵向速度（负值表示与自车对向）[m/s]
+          min_longitudinal_velocity: -8.0
+          # 判断障碍物为"可能切入"的最大运动方向角度 [rad] (= 140 度)
+          max_moving_direction_angle: 2.44
+          # 规划器假设障碍物以该减速度停下来，以避免不必要的停车 [m/s^2]
+          # 按物体类型设置不同的假设减速度
+          deceleration:
+            default: 0.0       # 默认不假设减速
+            pedestrian: 1.0    # 行人假设减速度 1.0
+            bicycle: 2.0       # 自行车假设减速度 2.0
+
+        # ---- 穿越障碍物预测 (Crossing Obstacle Prediction) ----
+        # 预测障碍物是否会横穿自车轨迹（例如十字路口的横向来车/行人）
+        # 点云障碍物不支持此功能
+        crossing_obstacle:
+          # 障碍物与自车的碰撞时间阈值 [s]
+          # TTC 低于此值 → 触发停车；高于此值 → 允许通过（cruise）
+          collision_time_margin : 1.0
+          # 穿越障碍物的偏航角（yaw）阈值 [rad] (= 70 度)
+          # 障碍物相对最近轨迹点的朝向角超过此值才被认为是"穿越"
+          traj_angle_threshold: 0.523599
+
+      # ============================================================================
+      # 点云分割参数 (Pointcloud Segmentation)
+      # 对原始点云进行分割和速度估计，生成点云障碍物
+      # ============================================================================
+      pointcloud_segmentation:
+        # ---- 时间序列关联 ----
+        # 将连续帧的点云聚类关联起来，用于速度估计
+        time_series_association:
+          # 两帧之间关联的最大时间差 [s]
+          max_time_diff: 0.35
+          # 关联时允许的最小障碍物速度 [m/s]
+          min_velocity: -5.0
+          # 关联时允许的最大障碍物速度 [m/s]
+          max_velocity: 30.0
+          # 两帧之间障碍物位置匹配的最大距离差 [m]
+          position_diff: 1.0
+
+        # ---- 速度估计 ----
+        velocity_estimation:
+          # 是否启用基于时间序列的速度估计
+          # false 时使用点云原始速度信息
+          use_estimated_velocity: false
+          # 估计速度的下限截断值 [m/s]
+          min_clamp_velocity: 0.0
+          # 估计速度的上限截断值 [m/s]
+          max_clamp_velocity: 20.0
+          # 进行速度估计所需的最小关联点数
+          required_velocity_count: 5
+          # 速度估计的低通滤波器增益 (0~1)
+          # 越接近 1，滤波越强，速度变化越平滑
+          lpf_gain: 0.9
+
+        # ---- 高度裕度 ----
+        # 在自车高度基础上扩展的碰撞检测范围
+        height_margin:
+          # 自车顶部以上的裕度 [m]
+          margin_from_top: 0.5
+          # 自车底部以下的裕度 [m]
+          margin_from_bottom: 0.5

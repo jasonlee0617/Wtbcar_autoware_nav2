@@ -1,0 +1,38 @@
+/**:
+  ros__parameters:
+
+    # 降采样滤波器的体素大小（单位：米）
+    # 值越小，保留的点云越密集，但计算量越大
+    # down_sample_voxel_size: 0.1
+    down_sample_voxel_size: 0.1
+
+    # 地图点云与传感器点云比较的距离阈值（单位：米）
+    # 超过此距离的点被认为是新观测点（不属于地图中的静态物体）
+    # official default: distance_threshold: 0.5
+    # 室内地图/墙边/旧障碍物附近容易把新障碍点云扣掉，测试阶段降低阈值以保留更多新观测点。
+    distance_threshold: 0.2
+
+    # Z 轴方向体素尺寸和邻域点距离阈值的缩小比例
+    # 用于在垂直方向上使用更精细的分辨率
+    downsize_ratio_z_axis: 0.6
+
+    # 是否发布体素化后的地图点云，用于调试可视化
+    publish_debug_pcd: False
+
+    # 是否启用动态地图加载：根据车辆位置动态加载周围的地图点云
+    use_dynamic_map_loading: true
+
+    # 动态地图加载的检查时间间隔（单位：毫秒）
+    timer_interval_ms: 100
+
+    # 触发动态地图更新的距离阈值（单位：米）
+    # 当车辆移动超过此距离时，重新加载周围的地图点云
+    map_update_distance_threshold: 10.0
+
+    # 动态地图加载的半径范围（单位：米）
+    # 以车辆为中心，加载此半径范围内的地图点云
+    map_loader_radius: 150.0
+
+    # 地图点云分割的最大网格尺寸阈值（单位：米）
+    # 将大地图拆分为网格单元，单个网格超过此尺寸则进一步细分
+    max_map_grid_size: 1000.0

@@ -1,0 +1,349 @@
+# ============================================================================
+# Autoware 规划模块预设 (Planning Module Preset)
+# ============================================================================
+# 本文件控制 Autoware 规划(planning)栈中各个子模块的启用/禁用，
+# 以及核心算法的类型选择。
+#
+# 架构总览：
+#   Scenario Planning（场景规划）
+#   ├── Behavior Path Planner（行为路径规划器）
+#   │   ├── 路径子模块：避障、变道、起点/终点、侧移等
+#   │   └── 速度子模块：人行横道、红绿灯、交叉口等
+#   ├── Motion Planning（运动规划）
+#   │   ├── Path Smoother（路径平滑器）
+#   │   ├── Path Planner（路径规划器）
+#   │   └── Velocity Planner（速度规划器）：障碍物停车/减速/巡航等
+#   ├── Velocity Smoother（速度平滑器）
+#   ├── Parking（泊车）
+#   └── Validators（验证器）
+# ============================================================================
+
+launch:
+  # ==========================================================================
+  # 1. 行为路径规划器 (Behavior Path Planner) 类型选择
+  # ==========================================================================
+  - arg:
+      name: behavior_path_planner_type
+      default: behavior_path_planner
+    # option: behavior_path_planner  # 标准行为路径规划器
+    #         path_generator          # 简单路径生成器（无行为决策）
+
+  # ==========================================================================
+  # 2. 行为路径子模块 (Behavior Path Modules)
+  #    负责中长期的路径决策，如变道、避障、起点/终点规划
+  # ==========================================================================
+
+  # ---- 静态障碍物避让 ----
+  # 检测道路上的静止障碍物（停靠车辆、路障等），生成绕行路径
+  - arg:
+      name: launch_static_obstacle_avoidance
+      default: "true"
+
+  # ---- 通过变道实现避让 ----
+  # 当无法在当前车道绕行时，通过变道到相邻车道来避开静态障碍物
+  - arg:
+      name: launch_avoidance_by_lane_change_module
+      default: "true"
+
+  # ---- 动态障碍物避让 ----
+  # 检测并避让移动中的障碍物（行驶中的车辆等）
+  - arg:
+      name: launch_dynamic_obstacle_avoidance
+      default: "false"
+
+  # ---- 采样规划器 ----
+  # 实验性模块：通过采样方式生成路径候选，仅建议在仿真中使用
+  - arg:
+      name: launch_sampling_planner_module
+      default: "false"
+    #   default: "true"
+
+  # ---- 右侧变道 ----
+  # 处理向右侧车道变道的决策与路径生成
+  - arg:
+      name: launch_lane_change_right_module
+      default: "true"
+
+  # ---- 左侧变道 ----
+  # 处理向左侧车道变道的决策与路径生成（日本等靠左行驶国家为慢车道）
+  - arg:
+      name: launch_lane_change_left_module
+      default: "true"
+
+  # ---- 外部请求右侧变道 ----
+  # 响应来自外部系统（如远程接管、V2X）的右侧变道请求
+  - arg:
+      name: launch_external_request_lane_change_right_module
+      default: "true"
+
+  # ---- 外部请求左侧变道 ----
+  # 响应来自外部系统的左侧变道请求
+  - arg:
+      name: launch_external_request_lane_change_left_module
+      default: "true"
+
+  # ---- 终点规划器 ----
+  # 在到达目标点附近时，规划靠边停车（pull over）或指定位置停车
+  - arg:
+      name: launch_goal_planner_module
+      # 静态绕障闭环测试阶段先关闭，避免近距离终点触发 goal_planner 抢占绕障路径
+      default: "false"                    # 默认参数值为 true
+
+  # ---- 起点规划器 ----
+  # 从停车位置出发时的路径规划（pull out），包括几何拉出和自由空间规划
+  - arg:
+      name: launch_start_planner_module
+      # 静止起步绕障测试阶段先关闭，避免 start_planner 与 static_obstacle_avoidance 竞争
+      default: "false"                    # 默认参数值为 true
+
+  # ---- 侧向偏移模块 ----
+  # 在车道内进行小幅侧向偏移（如避让路边停放的车辆）
+  - arg:
+      name: launch_side_shift_module
+      default: "true"
+
+  # ---- 双向交通模块 ----
+  # 处理双向单车道的会车场景（通过减速或靠边让行）
+  - arg:
+      name: launch_bidirectional_traffic_module
+      default: "true"
+
+  # ==========================================================================
+  # 3. 行为速度子模块 (Behavior Velocity Modules)
+  #    根据交通规则和场景决定速度限制和停车行为
+  #    这些模块生成"速度限制"和"停车点"，附加到路径上
+  # ==========================================================================
+
+  # ---- 人行横道 ----
+  # 检测人行横道及附近的行人，必要时减速或停车让行
+  - arg:
+      name: launch_crosswalk_module
+      default: "true"
+
+  # ---- 步行通道 ----
+  # 检测非交叉口的步行通道区域，处理行人的速度限制
+  - arg:
+      name: launch_walkway_module
+      default: "true"
+
+  # ---- 红绿灯 ----
+  # 识别交通信号灯状态（红/黄/绿），在红灯和黄灯时生成停车点
+  - arg:
+      name: launch_traffic_light_module
+      default: "true"
+
+  # ---- 交叉口 ----
+  # 处理无信号交叉口：检测交叉口内的其他车辆，判断通行权
+  - arg:
+      name: launch_intersection_module
+      default: "true"
+
+  # ---- 环岛 ----
+  # 处理环岛入口处的让行和并入
+  - arg:
+      name: launch_roundabout_module
+      default: "false"
+
+  # ---- 从私有区域并入 ----
+  # 处理从停车场/加油站等私有区域并入公共道路的场景
+  - arg:
+      name: launch_merge_from_private_module
+      default: "false"
+
+  # ---- 盲区检测 ----
+  # 在交叉口或合流处检测自车传感器盲区中的来车
+  - arg:
+      name: launch_blind_spot_module
+      default: "true"
+
+  # ---- 检测区域 ----
+  # 在指定的"检测区域"（如公交站、施工区）降低速度
+  - arg:
+      name: launch_detection_area_module
+      default: "true"
+
+  # ---- 虚拟红绿灯 ----
+  # 支持通过 V2X 或云端发送的虚拟交通信号灯信息
+  - arg:
+      name: launch_virtual_traffic_light_module
+      default: "true"
+
+  # ---- 禁止停车区域 ----
+  # 在禁止停车区域（消防栓、公交站等）阻止自车停下
+  - arg:
+      name: launch_no_stopping_area_module
+      default: "true"
+
+  # ---- 停止线 ----
+  # 检测并遵守道路上的停止线标志
+  - arg:
+      name: launch_stop_line_module
+      default: "true"
+
+  # ---- 视野遮挡点 ----
+  # 在视野被遮挡的位置（如建筑物拐角）减速通过
+  - arg:
+      name: launch_occlusion_spot_module
+      default: "false"
+
+  # ---- 减速带 ----
+  # 检测减速带并规划低速通过
+  - arg:
+      name: launch_speed_bump_module
+      default: "false"
+
+  # ---- 不可行驶车道 ----
+  # 处理无车道线区域的行驶策略
+  - arg:
+      name: launch_no_drivable_lane_module
+      default: "true"
+
+  # ==========================================================================
+  # 4. 运动规划 — 路径平滑 (Motion Path Smoother)
+  #    对行为规划器生成的路径进行平滑优化
+  # ==========================================================================
+  - arg:
+      name: motion_path_smoother_type
+      default: elastic_band    # EB (Elastic Band)：弹性带算法，像橡皮筋一样平滑路径
+      # option: elastic_band
+      #         none             # 不平滑，直接使用原始路径
+
+  # ==========================================================================
+  # 5. 运动规划 — 路径规划 (Motion Path Planner)
+  #    在平滑后的参考路径上优化具体行驶轨迹
+  # ==========================================================================
+  - arg:
+      name: motion_path_planner_type
+      default: path_optimizer  # 基于优化的路径规划器（平滑度+安全约束优化）
+      # option: path_optimizer
+      #         path_sampler     # 基于采样的路径规划器（生成多条候选路径择优）
+      #         none             # 不进行额外路径规划
+
+  # ==========================================================================
+  # 6. 运动速度规划器子模块 (Motion Velocity Planner Modules)
+  #    基于运动层面的障碍物信息，在轨迹上生成速度限制和停车点
+  #    与上面的 Behavior Velocity 不同，这里关注的是近距离的运动学层面障碍物
+  # ==========================================================================
+
+  # ---- 障碍物停车 ----
+  # 检测轨迹上的障碍物（点云+检测框），在障碍物前方规划停车
+  - arg:
+      name: launch_obstacle_stop_module
+    #   default: "true"
+      default: "false"
+
+  # ---- 障碍物减速 ----
+  # 在靠近障碍物时规划减速而非完全停车（用于不确定的/远处的障碍物）
+  - arg:
+      name: launch_obstacle_slow_down_module
+      default: "false"
+
+  # ---- 障碍物巡航 ----
+  # 跟随前方慢速车辆，使用 PID 控制保持安全跟车距离
+  - arg:
+      name: launch_obstacle_cruise_module
+      default: "true"
+
+  # ---- 动态障碍物停车 ----
+  # 专门针对移动中的障碍物（横穿车辆、行人）预测轨迹并规划停车
+  - arg:
+      name: launch_dynamic_obstacle_stop_module
+    #   default: "true"
+      default: "false"
+
+  # ---- 车道外模块 ----
+  # 监测可能从车道外（对向车道、路肩）侵入自车轨迹的障碍物
+  - arg:
+      name: launch_out_of_lane_module
+      default: "true"
+
+  # ---- 障碍物速度限制 ----
+  # 根据障碍物的 TTC（碰撞时间）动态限制自车速度
+  - arg:
+      name: launch_obstacle_velocity_limiter_module
+      default: "true"
+
+  # ---- 冲出道路检测 ----
+  # 在弯道处检测是否可能因速度过快冲出道路边界，插入安全速度
+  - arg:
+      name: launch_run_out_module
+      default: "true"
+
+  # ---- 道路边界偏离预防 ----
+  # 检测自车是否可能偏离道路边界（如护栏、路缘），插入减速或停车
+  - arg:
+      name: launch_boundary_departure_prevention_module
+      default: "true"
+
+  # ---- 道路使用者停车 ----
+  # 检测弱势道路使用者（VRU）并规划停车避让
+  - arg:
+      name: launch_road_user_stop_module
+      default: "false"
+
+  # ==========================================================================
+  # 7. 速度平滑器 (Velocity Smoother)
+  #    对上游速度规划结果进行平滑，确保加减速和加加速度在物理限制内
+  # ==========================================================================
+  - arg:
+      name: velocity_smoother_type
+      default: JerkFiltered       # 基于 Jerk 滤波的平滑器（平衡平滑度和精度）
+      # option: JerkFiltered
+      #         L2                   # L2 范数优化平滑器
+      #         Linf(Unstable)       # L∞ 范数优化平滑器（不稳定，慎用）
+      #         Analytical           # 解析法平滑器（基于前向/后向 jerk 约束推导）
+
+  # ==========================================================================
+  # 8. 周围障碍物检查器 (Surround Obstacle Checker)
+  #    检查自车周围是否被障碍物完全包围（避免无路可退）
+  # ==========================================================================
+  - arg:
+      name: launch_surround_obstacle_checker
+      default: "false"
+
+  # ==========================================================================
+  # 9. 泊车模块 (Parking Module)
+  #    处理自动泊车（平行泊车、垂直泊车等）
+  # ==========================================================================
+  - arg:
+      name: launch_parking_module
+      default: "true"
+
+  # ==========================================================================
+  # 10. 验证器模块 (Validator Modules)
+  #     对最终输出的轨迹进行安全性和合理性验证
+  # ==========================================================================
+
+  # ---- 延迟检查器 ----
+  # 检查规划模块的计算延迟，延迟过高时触发安全响应
+  - arg:
+      name: launch_latency_checker
+      default: "true"
+
+  # ---- 轨迹检查器 ----
+  # 检查输出轨迹的加速度、减速度、转向角等是否在车辆物理限制内
+  - arg:
+      name: launch_trajectory_checker
+      default: "true"
+
+  # ---- 交叉口碰撞检查器 ----
+  # 专门验证交叉口场景中自车轨迹与周围障碍物是否存在碰撞风险
+  - arg:
+      name: launch_intersection_collision_checker
+      default: "true"
+
+  # ---- 后方碰撞检查器 ----
+  # 检查变道/避障时后方来车是否存在碰撞风险
+  - arg:
+      name: launch_rear_collision_checker
+      default: "true"
+
+  # ==========================================================================
+  # 11. 其他模块
+  # ==========================================================================
+
+  # ---- 剩余距离/时间计算器 ----
+  # 计算到达目标点的剩余距离和预计时间，用于 HMI 显示
+  - arg:
+      name: launch_remaining_distance_time_calculator
+      default: "true"

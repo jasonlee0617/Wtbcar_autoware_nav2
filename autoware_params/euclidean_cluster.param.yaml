@@ -1,0 +1,73 @@
+# ==============================================================================
+# euclidean_cluster.param.yaml
+# 欧几里得聚类（Euclidean Cluster）参数 —— 感知 pipeline 的障碍物检测后端。
+#
+# 本节点是 Autoware 基于 LiDAR 的传统感知（clustering mode）的核心组件。
+# 它的上游是地面分割（ground segmentation）输出的非地面点云，
+# 下游是形状估计（shape estimation）和跟踪器（tracker）。
+#
+# 工作原理：
+#   1. 对非地面点云做体素降采样（voxel grid），降低计算量
+#   2. 在 3D 空间中使用欧几里得距离进行聚类
+#   3. 合并距离小于 tolerance 的点，形成候选障碍物簇
+#   4. 过滤掉过小（噪点）和过大（背景）的簇
+#
+# 调参要点：
+#   - tolerance: 聚类距离阈值。调大 → 稀疏点云也能聚成完整目标，但容易欠分割
+#                （把两个靠近的目标合成一个）
+#   - min/max_cluster_size: 目标点数范围。配合 LiDAR 分辨率和距离使用
+#   - use_height: 是否在距离计算中纳入 Z 轴。false → 仅用 XY 平面距离
+#
+# 本文件由 sync-params workflow 管理。
+# 标记 '{OVERRIDE}' 或 '# {OVERRIDE: reason}' 的字段会被持久化为变体覆盖。
+# This file is managed by sync-params workflow.
+# Keys marked with '{OVERRIDE}' or '# {OVERRIDE: reason}' are persisted as variant overrides.
+# 'reason' can be any single-line text without braces.
+# To keep local changes, annotate fields with '# {OVERRIDE}' or '# {OVERRIDE: reason}'.
+#
+# Source: https://github.com/autowarefoundation/autoware_universe/blob/f31e5dc592626af392ef0321b75b031b132537b2/perception/autoware_euclidean_cluster/config/euclidean_cluster.param.yaml
+
+/**:
+  ros__parameters:
+    # ---- 聚类结果过滤 ----
+    # max_cluster_size: 单个簇允许的最大点数。
+    #   超过此值的簇被认为是背景（墙壁、地面残留），直接丢弃。
+    #   调大 → 允许更大的完整目标（如卡车、巴士）
+    #   调小 → 更激进地过滤大块背景噪点
+    max_cluster_size: 1000                               # [-] 最大簇点数
+
+    # min_cluster_size: 单个簇允许的最小点数。
+    #   低于此值的簇被认为是噪点或无效回波，直接丢弃。
+    #   调大 → 过滤更多稀疏噪点，但可能漏掉远处小目标
+    #   调小 → 保留更多候选，但噪声也更多
+    min_cluster_size: 1                                 # [-] 最小簇点数
+
+    # ---- 聚类核心参数 ----
+    # tolerance: 欧几里得聚类距离阈值 [m]。
+    #   两个点之间的距离 ≤ tolerance 时，归入同一个簇。
+    #   这是聚类算法最关键的参数，直接影响分割粒度。
+    #
+    #   调大（如 1.0）:
+    #     - 稀疏点云也能聚成完整目标（远距离、低通道数 LiDAR 友好）
+    #     - 但容易把靠近的两个目标粘在一起（欠分割 → 1 个目标框包含两个物体）
+    #   调小（如 0.3）:
+    #     - 靠近的目标更容易分开（过分割友好）
+    #     - 但远距离或低反射率目标可能被切成碎片
+    #
+    #   推荐调试范围：0.3 ~ 1.0，配合 LiDAR 线数和目标距离调整。
+    tolerance: 1.0                                       # [m] 聚类距离阈值
+    # 该值基于 Autoware Universe 默认配置，适用于 16 通道以上 LiDAR 在
+    # 城市/园区环境下的近中距离（<30m）障碍物检测。
+
+    # ---- 距离计算方式 ----
+    # use_height: 聚类时是否纳入 Z 轴（高度）参与距离计算。
+    #   false → 仅用 XY 平面距离（2D 欧氏距离）
+    #   true  → 用 XYZ 三维距离
+    #
+    #   false 的优势: 地面上方的悬空物（如树枝、标志牌）不会被高度差
+    #                过度分割，低矮障碍物不会被地面残留点影响。
+    #   true  的优势: 多层停车场、坡道等有显著 Z 变化的场景更准确。
+    #
+    #   一般场景推荐 false（2D 聚类），因为地面分割后 Z 轴信息对
+    #   聚类贡献不大，反而引入噪声。
+    use_height: false                                    # [-] 是否使用高度参与聚类

@@ -1,0 +1,177 @@
+# ==============================================================================
+# avoidance_by_lane_change.param.yaml
+# 变道绕障（Avoidance by Lane Change）模块参数。
+#
+# 本模块是 behavior_path_planner 的子模块，与 static/dynamic avoidance 互补。
+# 区别：
+#   - static_avoidance:  在同一车道内通过横向偏移（shift line）绕过障碍物
+#   - dynamic_avoidance: 通过扩展/收缩可行驶区域让 path_optimizer 绕开目标
+#   - avoidance_by_lane_change: 通过完整变道到相邻车道绕过前方障碍物
+#
+# 适用场景：前方障碍物占据当前车道大部分空间，横向偏移不足以绕开，
+#           但相邻同向车道可用 → 执行 lane change 绕过去再变回来。
+#
+# 工作流程：
+#   1. 检测前方障碍物是否满足"需要变道绕"的条件
+#   2. 检查目标车道是否可用（空闲、合法、安全）
+#   3. 生成 avoid + return 两个 lane change 路径
+#   4. 通过 RTC 审批后执行
+#
+# 调参要点：
+#   - execute_object_longitudinal_margin: 核心参数，决定"距障碍多远时开始变道"
+#   - execute_only_when_lane_change_finish_before_object:
+#     是否要求变道必须在到达障碍之前完成
+#   - target_type: bicycle/motorcycle/pedestrian 默认关闭（避免为小目标做整车变道）
+# ==============================================================================
+/**:
+  ros__parameters:
+    avoidance_by_lane_change:
+      # =========================================================================
+      # 1. 执行条件 —— 控制何时触发和如何执行变道绕障
+      # =========================================================================
+
+      # ---- 纵向执行余量 ----
+      # execute_object_longitudinal_margin: 目标前方的纵向距离 [m]。
+      #   自车需要在达到目标前至少有这么远的距离来完成变道准备。
+      #   这是控制"多远之前开始变道"的核心参数。
+      #
+      #   调大（如默认 80m）: 适合高速/长车道，保证变道有充足空间
+      #   调小（如当前 5m） : 适合低速/短车道，否则永远触发不了
+      #
+      #   WTB 测试: 地图有效车道很短，80m 会导致变道绕障永远达不到执行条件。
+      #   降到 5m，让相邻同向车道可用于低速绕障验证。
+      # execute_object_longitudinal_margin: 5.0              # [m] WTB: 从 80m 降低
+      execute_object_longitudinal_margin: 0.8              # [m] WTB: 从 80m 降低
+
+      # ---- 变道完成要求 ----
+      # execute_only_when_lane_change_finish_before_object:
+      #   true  → 变道必须在到达障碍物位置之前完全完成（更安全，但限制严格）
+      #   false → 变道可以与障碍物位置部分重叠（更灵活，允许边变道边绕）
+      execute_only_when_lane_change_finish_before_object: false  # [-] 允许边变道边绕
+
+      # =========================================================================
+      # 2. 目标对象参数 —— 按类别定义判定阈值与余量
+      # =========================================================================
+      # avoidance is performed for the object type with true
+      target_object:
+        # ---- 常见字段说明 ----
+        # th_moving_speed / th_moving_time:
+        #   低于该速度并持续该时间后 → 判为静止目标（触发变道绕障的前提）
+        # max_expand_ratio: 目标包络的最大扩展比例（0 = 不扩展）
+        # envelope_buffer_margin: 对目标包络额外膨胀的安全量 [m]
+        # lateral_margin:
+        #   soft_margin: 舒适侧向间距（优先满足）
+        #   hard_margin: 空间不够时允许的最小侧向间距
+        #   hard_margin_for_parked_vehicle: 路边停车车辆的特化更紧间距
+        #
+        # 注意：本模块的 lateral_margin 大部分设为 0.0，因为变道绕障更依赖
+        # "完整变到另一条车道" 而非 "在当前车道内横向挤压"。侧向间距由
+        # 目标车道本身提供。
+
+        # ---- 乘用车 ----
+        car:
+          th_moving_speed: 1.0                             # [m/s] 静止判定速度 (~3.6km/h)
+          th_moving_time: 1.0                              # [s] 持续判定时间
+          max_expand_ratio: 0.0                            # [-] 不扩展包络
+          envelope_buffer_margin: 0.3                      # [m] 包络膨胀
+          lateral_margin:
+            soft_margin: 0.0                               # [m] 不额外留舒适间距
+            hard_margin: 0.0                               # [m]
+            hard_margin_for_parked_vehicle: 0.0            # [m]
+        # ---- 卡车 ----
+        truck:
+          th_moving_speed: 1.0
+          th_moving_time: 1.0
+          max_expand_ratio: 0.0
+          envelope_buffer_margin: 0.3
+          lateral_margin:
+            soft_margin: 0.0
+            hard_margin: 0.0
+            hard_margin_for_parked_vehicle: 0.0
+        # ---- 巴士 ----
+        bus:
+          th_moving_speed: 1.0
+          th_moving_time: 1.0
+          max_expand_ratio: 0.0
+          envelope_buffer_margin: 0.3
+          lateral_margin:
+            soft_margin: 0.0
+            hard_margin: 0.0
+            hard_margin_for_parked_vehicle: 0.0
+        # ---- 拖车 ----
+        trailer:
+          th_moving_speed: 1.0
+          th_moving_time: 1.0
+          max_expand_ratio: 0.0
+          envelope_buffer_margin: 0.3
+          lateral_margin:
+            soft_margin: 0.0
+            hard_margin: 0.0
+            hard_margin_for_parked_vehicle: 0.0
+        # ---- 未知类别 ----
+        # 感知无法分类的目标：低速阈值更低以捕获更多潜在障碍
+        unknown:
+          th_moving_speed: 2.0                            #默认参数0.28 [m/s] (~1.0km/h) 极低速判定
+          th_moving_time: 2.0                              #默认参数1.0
+          max_expand_ratio: 0.0                            #默认参数0.0
+          envelope_buffer_margin: 0.3                      #默认参数0.3
+          lateral_margin:
+            soft_margin: 0.0                               #默认参数0.0
+            hard_margin: 0.0                               #默认参数0.0
+            hard_margin_for_parked_vehicle: 0.0            #默认参数0.0
+        # ---- 自行车 ----
+        # VRU (弱势道路使用者) 类：更大的包络膨胀和侧向间距
+        bicycle:
+          th_moving_speed: 0.28                            # [m/s] (~1.0km/h)
+          th_moving_time: 1.0
+          max_expand_ratio: 0.0
+          envelope_buffer_margin: 0.8                      # [m] VRU 更多膨胀
+          lateral_margin:
+            soft_margin: 0.0
+            hard_margin: 1.0                               # [m] VRU 最小 1m 侧向间距
+            hard_margin_for_parked_vehicle: 1.0
+        # ---- 摩托车 ----
+        motorcycle:
+          th_moving_speed: 1.0
+          th_moving_time: 1.0
+          max_expand_ratio: 0.0
+          envelope_buffer_margin: 0.8
+          lateral_margin:
+            soft_margin: 0.0
+            hard_margin: 1.0                               # [m] VRU 最小 1m 侧向间距
+            hard_margin_for_parked_vehicle: 1.0
+        # ---- 行人 ----
+        pedestrian:
+          th_moving_speed: 0.28                            # [m/s] (~1.0km/h)
+          th_moving_time: 1.0
+          max_expand_ratio: 0.0
+          envelope_buffer_margin: 0.8                      # [m] 行人最大膨胀
+          lateral_margin:
+            soft_margin: 0.0
+            hard_margin: 1.0                               # [m] 行人最小 1m 侧向间距
+            hard_margin_for_parked_vehicle: 1.0
+
+        # ---- 多边形扩展距离 ----
+        # 只有目标距自车在这个距离范围内时，才逐步放大其多边形包络。
+        # 避免远处目标几何误差过小导致漏检。
+        lower_distance_for_polygon_expansion: 0.0          # [m] 扩展起始距离
+        upper_distance_for_polygon_expansion: 1.0          # [m] 扩展结束距离
+
+      # =========================================================================
+      # 3. 目标筛选 —— 哪些类别触发变道绕障
+      # =========================================================================
+      # For target object filtering
+      target_filtering:
+        # avoidance target type
+        target_type:
+          # 车辆类：全部启用（这些是变道绕障的主要目标）
+          car: true                                        # [-] 乘用车
+          truck: true                                      # [-] 卡车
+          bus: true                                        # [-] 巴士
+          trailer: true                                    # [-] 拖车
+          unknown: true                                    # [-] 未知类别
+          # VRU 类：默认关闭 —— 为自行车/摩托车/行人做整车变道通常过度，
+          # 这些目标应交给 static_avoidance（同车道偏移）处理。
+          bicycle: false                                   # [-] 自行车不触发
+          motorcycle: false                                # [-] 摩托车不触发
+          pedestrian: true                               # [-] 行人不触发，默认参数false

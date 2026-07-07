@@ -1,0 +1,90 @@
+# ==============================================================================
+# obstacle_pointcloud_based_validator.param.yaml
+# 基于点云的检测目标验证器（Obstacle Pointcloud Based Validator）参数。
+#
+# 本节点位于检测（detection）与跟踪（tracking）之间，负责过滤检测器的
+# 误检/虚警。它拿到每个 DetectedObject 的 3D 框，提取框内的原始点云，
+# 与框的尺寸/距离做一致性校验，移除"框大点少"等不可信的检测结果。
+#
+# 工作流程：
+#   1. 对每个 DetectedObject，裁剪框内的原始点云
+#   2. 统计框内点数、点数/距离比等几何特征
+#   3. 与阈值对比：不满足 → 删除该目标
+#   4. 通过的目标 → 传递给 multi_object_tracker
+#
+# 对动态绕障的关键影响：
+#   - validate_max_distance_m: 超过此距离的目标不被校验 → 可能保留远处虚警
+#   - min_points_num: 框内点数太少 → 可能是噪声/鬼影 → 删除
+#
+# 本文件由 sync-params workflow 管理。
+# ==============================================================================
+# This file is managed by sync-params workflow.
+# Keys marked with '{OVERRIDE}' or '# {OVERRIDE: reason}' are persisted as variant overrides.
+# 'reason' can be any single-line text without braces.
+# To keep local changes, annotate fields with '# {OVERRIDE}' or '# {OVERRIDE: reason}'.
+#
+# Source: https://github.com/autowarefoundation/autoware_universe/blob/178b6c003ae5f5c2838352f397df7a0bbea9e6bb/perception/autoware_detected_object_validation/config/obstacle_pointcloud_based_validator.param.yaml
+
+/**:
+  ros__parameters:
+    # =========================================================================
+    # 1. 框内最少点数 —— 按类别的最小点云点数阈值
+    # =========================================================================
+    # min_points_num: 目标 3D 框内至少需要有多少个原始点云点，才认为该检测有效。
+    #   点数低于此值 → 大概率是噪声/鬼影/远处残影 → 删除。
+    #   数组按类别顺序: UNKNOWN, CAR, TRUCK, BUS, TRAILER, MOTORBIKE, BICYCLE, PEDESTRIAN
+    #   official default: [10, 10, 10, 10, 10, 10, 10, 10]
+    #   WTB 当前值降低了小目标/弱反射目标的最少点数门槛，避免 5-6m 稀疏障碍被验证器删掉。
+    min_points_num:
+    #UNKNOWN, CAR, TRUCK, BUS, TRAILER, MOTORBIKE, BICYCLE, PEDESTRIAN
+      [1,     5,   5,     5,      5,      3,       3,          3]    # [-] 最少点数
+
+    # =========================================================================
+    # 2. 框内最多点数 —— 按类别的最大点云点数阈值
+    # =========================================================================
+    # max_points_num: 目标 3D 框内最多允许有多少个原始点云点。
+    #   点数高于此值 → 可能是背景（墙壁、地面残留）→ 删除。
+    #   official default: [10, 10, 10, 10, 10, 10, 10, 10]
+    #   WTB 当前值放宽到 800，避免行人/标识牌/小车边缘点云稍密时被误判为背景。
+    max_points_num:
+    #UNKNOWN, CAR, TRUCK, BUS, TRAILER, MOTORBIKE, BICYCLE, PEDESTRIAN
+      [800,   800, 800,   800,    800,    800,     800,        800]  # [-] 最多点数
+
+    # =========================================================================
+    # 3. 点数-距离比 —— 按类别的 (框内点数 / 目标距离) 阈值
+    # =========================================================================
+    # min_points_and_distance_ratio: 最小 (点数 / 距离) 比值。
+    #   距离越远，LiDAR 打在目标上的点越少。这个比值防止"远处大框只有 1-2 个点"
+    #   的虚警通过。
+    #   例: ratio=800, 距离=10m → 至少需要 80 个点；距离=50m → 至少需要 16 个点。
+    #   值大 → 更严格，远处目标更容易被过滤。
+    #   值小 → 更宽松，保留更多远处候选。
+    #   official default: [800.0, 800.0, 800.0, 800.0, 800.0, 800.0, 800.0, 800.0]
+    #   WTB 当前值降低点数/距离比门槛，让低线束 LiDAR 的 5-12m 小目标更稳定通过验证。
+    min_points_and_distance_ratio:
+    #UNKNOWN,  CAR,    TRUCK,     BUS,    TRAILER, MOTORBIKE, BICYCLE,      PEDESTRIAN
+      [1.0,   50.0,   50.0,     50.0,    50.0,       30.0,     30.0,          30.0]  # [1/m]
+
+    # =========================================================================
+    # 4. 最大验证距离 —— 超过此距离的目标不做点云验证
+    # =========================================================================
+    # validate_max_distance_m: 超过此距离 [m] 的目标直接放行（不验证）。
+    #   原理：远距离目标的点云过于稀疏，点云验证没有意义反而容易误删。
+    #   调大 → 更严格，远处目标也验证（但可能误删稀疏目标）
+    #   调小 → 更宽松，远处目标直接信任检测器结果
+    validate_max_distance_m: 70.0                        # [m] 最大验证距离
+
+    # =========================================================================
+    # 5. 验证器模式 —— 2D 或 3D
+    # =========================================================================
+    # using_2d_validator: 是否使用 2D 验证器。
+    #   true  → 仅在 XY 平面（BEV）上验证框内点数（忽略 Z 轴）
+    #   false → 在 XYZ 三维空间中验证
+    #   2D 模式更适合地面分割后的场景（Z 轴信息已被削弱），也是当前 WTB 的选择。
+    using_2d_validator: true                             # {OVERRIDE} 使用 2D 验证
+
+    # =========================================================================
+    # 6. 调试器 —— 发布验证过程的可视化信息
+    # =========================================================================
+    # enable_debugger: false                               # 不启用调试可视化
+    enable_debugger: true                               # 不启用调试可视化

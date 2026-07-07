@@ -1,0 +1,192 @@
+# ==============================================================================
+# multi_object_tracker_node.param.yaml
+# 多目标跟踪器（Multi-Object Tracker）节点参数。
+#
+# 本节点是感知 pipeline 中检测（detection）与预测（prediction）之间的核心桥梁。
+# 它接收每帧的检测结果，通过卡尔曼滤波或数据关联将跨帧目标串联成稳定的跟踪
+# 轨迹（track），同时估计目标速度和运动状态。
+#
+# 工作和数据流：
+#   上游输入: /perception/.../detection/.../objects  (检测到的每帧目标)
+#   ↓
+#   1. 数据关联（data association）：将新检测与已有跟踪目标匹配（IoU + 距离）
+#   2. 状态更新（state update）：用卡尔曼滤波器融合新观测，更新位置/速度/尺寸
+#   3. 轨迹管理（track management）：新生目标确认、丢失目标保留、消亡目标清理
+#   4. 速度估计（velocity estimation）：对未知类别目标也可估计速度
+#   ↓
+#   下游输出: /perception/object_recognition/tracking/objects
+#             → 进入 map_based_prediction 做轨迹预测
+#             → 发布到 /perception/object_recognition/objects（规划的统一输入）
+#
+# 对动态绕障的关键影响：
+#   - 速度估计质量 → 直接决定目标是否被判定为"动态"
+#   - 跟踪稳定性   → 目标 ID 不跳变，绕障决策不抖动
+#   - 延迟补偿     → 补偿感知 pipeline 延迟，避免目标位置滞后
+#
+# 本文件由 sync-params workflow 管理。
+# 标记 '{OVERRIDE}' 的字段已覆盖上游默认值。
+# ==============================================================================
+# This file is managed by sync-params workflow.
+# Keys marked with '{OVERRIDE}' or '# {OVERRIDE: reason}' are persisted as variant overrides.
+# 'reason' can be any single-line text without braces.
+# To keep local changes, annotate fields with '# {OVERRIDE}' or '# {OVERRIDE: reason}'.
+#
+# Source: https://github.com/autowarefoundation/autoware_universe/blob/682bd2ea2df48d232d8243400c7e1f24583aaef1/perception/autoware_multi_object_tracker/config/multi_object_tracker_node.param.yaml
+
+/**:
+  ros__parameters:
+    # =========================================================================
+    # 1. 跟踪器模型分配 —— 按类别选择不同的跟踪算法
+    # =========================================================================
+    # initial tracker models for each class
+    initial_tracker:
+      # multi_vehicle_tracker:      适合车辆类（刚性、运动模型明确、尺寸大）
+      # pedestrian_and_bicycle_tracker: 适合 VRU 类（非刚性、运动灵活、尺寸小）
+      car: "multi_vehicle_tracker"                       # 乘用车 → 车辆跟踪器
+      truck: "multi_vehicle_tracker"                     # 卡车
+      bus: "multi_vehicle_tracker"                       # 巴士
+      trailer: "multi_vehicle_tracker"                   # 拖车
+      pedestrian: "pedestrian_and_bicycle_tracker"       # 行人 → VRU 跟踪器
+      bicycle: "pedestrian_and_bicycle_tracker"          # 自行车
+      motorcycle: "pedestrian_and_bicycle_tracker"       # 摩托车
+
+    # =========================================================================
+    # 2. 通用参数 —— 发布频率、坐标系、延迟补偿
+    # =========================================================================
+    # default tracker node parameters
+
+    # ---- 发布频率 ----
+    # publish_rate: 跟踪结果发布频率 [Hz]。
+    #   10Hz 意味着每 0.1s 发布一次跟踪状态。
+    #   调低 → 减少计算/带宽；调高 → 更密集的状态更新（适合高速场景）
+    publish_rate: 10.0                                   # [Hz] 发布频率
+
+    # ---- 坐标系 ----
+    # world_frame_id: 世界坐标系（用于全局位置表达）
+    # ego_frame_id: 自车坐标系（用于相对位置表达）
+    world_frame_id: map                                  # 世界坐标系
+    ego_frame_id: base_link                              # 自车坐标系
+
+    # ---- 延迟补偿 ----
+    # enable_delay_compensation: 是否补偿感知 pipeline 的处理延迟。
+    #   感知从 LiDAR 扫描到输出检测结果有几十到几百 ms 的延迟。
+    #   开启后，跟踪器会用 ego odometry 将目标位置"外推"到当前时刻。
+    #   强烈建议开启，否则动态绕障会看到"滞后"的目标位置。
+    enable_delay_compensation: true                      # {OVERRIDE} 开启延迟补偿
+
+    # ---- 里程计不确定性 ----
+    # consider_odometry_uncertainty: 是否考虑 ego 里程计的不确定性。
+    #   true  → 在状态预测中纳入 ego odom 的协方差（更精确但更复杂）
+    #   false → 假设 ego odom 是完美的
+    consider_odometry_uncertainty: false                 # 不考虑里程计不确定性
+
+    # ---- 未知目标速度估计 ----
+    # enable_unknown_object_velocity_estimation:
+    #   对 UNKNOWN 类别的目标是否也尝试估计其速度。
+    #   开启后，即使是感知无法分类的障碍物，也能基于位置变化推算速度，
+    #   对动态绕障很有价值（防止"未知移动目标"被当成静止）。
+    #   关闭后 UNKNOWN 目标只能通过 IoU 关联跟踪，速度估计不可靠。
+    enable_unknown_object_velocity_estimation: true       # 对未知目标也估计速度
+
+    # ---- 未知目标运动输出 ----
+    # enable_unknown_object_motion_output:
+    #   是否将 UNKNOWN 目标的运动状态输出给下游。
+    #   与上面不同：上面是"估计速度"，这里是"是否把运动状态写入输出消息"。
+    #   false → UNKNOWN 目标即使被跟踪，输出中也不标记为 moving。
+    enable_unknown_object_motion_output: true            # 默认false,不输出未知目标运动状态
+
+    # =========================================================================
+    # 3. 跟踪器参数 —— 数据关联与目标匹配
+    # =========================================================================
+    # tracker parameters
+
+    # ---- 目标移除 IoU 阈值 ----
+    # min_*_object_removal_iou: 当跟踪目标与检测目标的 IoU 低于此值时，
+    #   认为该跟踪目标已消失，将其标记为"待移除"。
+    #   值低 → 更宽松，已丢失的目标保留更久（容忍短暂遮挡）
+    #   值高 → 更严格，丢失后更快清理（减少 ghost track）
+    min_known_object_removal_iou: 0.1                    # [ratio] 默认值0.1,已知类别最小 IoU
+    min_unknown_object_removal_iou: 0.001                # [ratio] 默认值0.001,未知类别最小 IoU（极低 → 几乎不删）
+
+    # =========================================================================
+    # 4. 轨迹裁剪（Pruning）—— 清理低质量或冗余的跟踪目标
+    # =========================================================================
+    # pruning parameters
+
+    # ---- 广义 IoU 阈值 ----
+    # pruning_generalized_iou_thresholds:
+    #   当两个跟踪目标的 Generalized IoU 超过此阈值时，认为它们是同一个目标，
+    #   保留质量更高的那个，裁剪另一个（去重）。
+    #   -0.3 ~ -0.6: 负值意味着即使两个框不重叠，只要在空间上足够接近就合并。
+    #   值越负 → 越容易合并（更激进地去重）
+    # generalized IoU thresholds for tracked classes
+    pruning_generalized_iou_thresholds:
+      unknown: -0.3                                      # [-] 未知类别 GIoU 阈值
+      car: -0.4                                          # [-] 乘用车
+      truck: -0.6                                        # [-] 卡车（大尺寸 → 更容易重叠 → 更激进合并）
+      bus: -0.6                                          # [-] 巴士
+      trailer: -0.6                                      # [-] 拖车
+      motorcycle: -0.1                                   # [-] 摩托车（小目标 → 保守合并）
+      bicycle: -0.1                                      # [-] 自行车
+      pedestrian: -0.1                                   # [-] 行人
+
+    # ---- 距离阈值 ----
+    # pruning_distance_thresholds:
+    #   跟踪目标与检测目标之间的最大距离 [m]。
+    #   超过此距离的目标不会被关联（认为是不同目标）。
+    #   值大 → 远距离目标也能关联（适合高速/大场景）
+    #   值小 → 近距离偏好（减少远距离误关联）
+    pruning_distance_thresholds:
+      unknown: 9.0                                       # [m] 未知类别（宽松 → 不轻易丢）
+      car: 5.0                                           # [m] 乘用车
+      truck: 9.0                                         # [m] 卡车（尺寸大，允许更远关联）
+      bus: 9.0                                           # [m] 巴士
+      trailer: 9.0                                       # [m] 拖车
+      motorcycle: 4.0                                    # [m] 摩托车
+      bicycle: 3.0                                       # [m] 自行车
+      pedestrian: 2.0                                    # [m] 行人（小目标 → 近距离关联防误匹配）
+
+    # ---- 静止/运动目标裁剪速度阈值 ----
+    # pruning_static_object_speed: 速度低于此值的目标被分类为"静止" [m/s]。
+    #   静止目标的裁剪策略比运动目标更激进（低 IoU 更容易被清理）。
+    # pruning_static_object_speed: 1.38                    # [m/s] 静止判定速度 (~5 km/h)
+    pruning_static_object_speed: 2.0                    # [m/s] 静止判定速度 (~5 km/h)
+    # pruning_moving_object_speed: 速度高于此值的目标被分类为"运动" [m/s]。
+    pruning_moving_object_speed: 5.5                     # [m/s] 运动判定速度 (~20 km/h)
+    # pruning_static_iou_threshold: 静止目标间的 IoU 阈值。
+    #   0.0 → 两个静止目标只要有轻微重叠就合并
+    pruning_static_iou_threshold: 0.0                    # [ratio] 静止目标 IoU 去重阈值
+
+    # =========================================================================
+    # 5. 调试参数 —— 不影响跟踪逻辑，仅控制日志和可视化输出
+    # =========================================================================
+    # debug parameters
+
+    # ---- 处理耗时 ----
+    publish_processing_time: true                        # {OVERRIDE} 发布处理耗时到 /diagnostics
+    publish_processing_time_detail: false                # 不发布详细耗时（各子步骤）
+
+    # ---- 暂定目标 ----
+    # publish_tentative_objects: 是否发布"暂定"目标（尚未确认的新生目标）。
+    #   false → 只发布已确认的稳定跟踪目标（推荐，减少噪声）
+    #   true  → 也发布新生候选目标（适合调试感知漏检）
+    publish_tentative_objects: true                     # 不发布暂定目标
+
+    # ---- 调试 Marker ----
+    publish_debug_markers: true                         # 默认false不发布 RViz 调试 marker
+
+    # ---- 诊断告警阈值 ----
+    # diagnostics_warn_delay / error_delay:
+    #   跟踪结果输出延迟超过此值 [s] 时发出 WARN / ERROR。
+    #   warn=0.5s, error=1.0s → 超过 0.5s 开始警告，超过 1.0s 报错
+    diagnostics_warn_delay: 0.5                          # [sec] 延迟告警阈值
+    diagnostics_error_delay: 1.0                         # [sec] 延迟报错阈值
+
+    # ---- 诊断外推告警 ----
+    # diagnostics_warn_extrapolation / error_extrapolation:
+    #   跟踪器在无新观测时需要"外推"(extrapolate) 目标位置。
+    #   连续外推超过此时间 [s] 时发出 WARN / ERROR。
+    #   warn=0.5s → 目标丢失 0.5s 后开始告警
+    #   error=1.0s → 目标丢失 1.0s 后报错
+    diagnostics_warn_extrapolation: 0.5                  # [sec] 外推告警阈值
+    diagnostics_error_extrapolation: 1.0                 # [sec] 外推报错阈值

@@ -3,12 +3,15 @@
     use_sim_time: false
 
     # Topics
-    pointCloudTopic: "/sensing/lidar/pointcloud_raw"
+    # Use concatenated pointcloud (base_link frame) so the map Z=0 is
+    # anchored at base_link (ground level), eliminating the post-processing
+    # pcl_transform_point_cloud step.
+    pointCloudTopic: "/sensing/lidar/concatenated/pointcloud_xyzirt"
     imuTopic: "/imu"
     odomTopic: "odometry/imu"
 
     # Frames
-    lidarFrame: "laser"
+    lidarFrame: "base_link"
     baselinkFrame: "base_link"
     odometryFrame: "odom"
     mapFrame: "map"
@@ -25,7 +28,7 @@
     savePCDDirectory: "/autoware_data/maps/wtb_lio_sam/"
 
     # Sensor Settings
-    sensor: robosense
+    sensor: velodyne
     N_SCAN: 16
     Horizon_SCAN: 1500
     downsampleRate: 1
@@ -40,11 +43,12 @@
     imuGravity: 9.80511
     imuRPYWeight: 0.01
 
-    # IMU -> LiDAR extrinsic, derived from the current WTB sensor model:
-    # base_link -> gyro_link = (0.41, 0.0, 0.26)
-    # base_link -> laser     = (0.77, 0.0, 1.60)
-    # gyro_link -> laser     = (0.36, 0.0, 1.34)
-    extrinsicTrans: [0.36, 0.0, 1.34]
+    # IMU -> base_link extrinsic (current calibration):
+    #   base_link -> sensor_kit_base_link = (0.41, 0.0, 0.66)
+    #   sensor_kit_base_link -> gyro_link  = (0.00, 0.0, -0.40)
+    #   base_link -> gyro_link             = (0.41, 0.0, 0.26)
+    #   IMU(gyro_link) -> base_link        = (-0.41, 0.0, -0.26)
+    extrinsicTrans: [-0.41, 0.0, -0.26]
     extrinsicRot: [1.0, 0.0, 0.0,
                    0.0, 1.0, 0.0,
                    0.0, 0.0, 1.0]

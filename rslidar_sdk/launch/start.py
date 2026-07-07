@@ -9,7 +9,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # 1. 静态 TF 变换 (base_link -> laser)
+        # # 1. 静态 TF 变换 (base_link -> laser)
         # Node(
         #     package='tf2_ros',
         #     executable='static_transform_publisher',

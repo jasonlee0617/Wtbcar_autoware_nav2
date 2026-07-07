@@ -17,10 +17,13 @@
   <arg name="ekf_imu_topic" default="/imu"/>
   <arg name="ekf_param_file" default="$(find-pkg-share wtb_vehicle_launch)/config/ekf_wtb_fdimu.yaml"/>
 
+  <!-- launch_joint_state_publisher disabled here: it is already started
+       unconditionally by vehicle_interface.launch.xml below. -->
   <include file="$(find-pkg-share wtb_vehicle_launch)/launch/vehicle.launch.xml">
     <arg name="use_sim_time" value="$(var use_sim_time)"/>
     <arg name="vehicle_model" value="$(var vehicle_model)"/>
     <arg name="sensor_model" value="$(var sensor_model)"/>
+    <arg name="launch_joint_state_publisher" value="false"/>
   </include>
 
   <include file="$(find-pkg-share can_bridge)/launch/can_bridge.launch.py"/>

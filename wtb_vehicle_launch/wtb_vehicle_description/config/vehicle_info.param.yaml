@@ -23,8 +23,10 @@
     max_steer_angle: 1.2109
     max_steer_angle_rate: 2.0
 
-    max_velocity: 1.0
-    max_acceleration: 1.0
+    # max_velocity: 1.0
+    # max_acceleration: 1.0
+    max_velocity: 0.5
+    max_acceleration: 0.5
     min_acceleration: -1.0
 
     cog_to_rear_axle: 0.41

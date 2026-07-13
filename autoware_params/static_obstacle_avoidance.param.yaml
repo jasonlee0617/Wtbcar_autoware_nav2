@@ -4,7 +4,7 @@
     # 静态障碍物避让模块 (static_obstacle_avoidance)
     #
     # 功能概述：
-    #   检测并规避道路上的静态物体（如停放车辆、路障等），通过生成横向偏移轨迹
+    #   检测并规避道路上的静态物体（本系统中由感知模块统一标记为 unknown 类型），
     #   或减速停车来保证行车安全。
     #
     # 工作原理：
@@ -32,25 +32,57 @@
       #   - 下列公式用于解释 shift_line_base 的主要几何/运动学关系。
       #   - Autoware 实际实现使用 envelope polygon、路径弧长、插值后的 jerk/accel 限制；
       #     因此矩形宽度公式是便于调参的等价近似，最终以本机源码/debug 输出为准。
-      #   - 本文件只修改注释，不修改任何现有参数值。
+      #   - 本次未修改参数数值；仅补充/校正注释，并修复 UNKNOWN lateral_margin
+      #     下 hard_margin 两个键的缩进，使其与 [SRC-PARAM] 读取路径一致。
+      #
+      # 参数/运行时数据/公式来源索引（源码根目录：/home/robot/autoware/src）：
+      #   [CFG-AVOID] 本文件 autoware_params/static_obstacle_avoidance.param.yaml
+      #               提供 hard/soft margin、envelope buffer、prepare time、jerk 等参数。
+      #   [CFG-VEH]   wtb_vehicle_launch/wtb_vehicle_description/config/vehicle_info.param.yaml
+      #               提供 vehicle_width、wheel_base、front/rear_overhang。
+      #   [CFG-BOUND] autoware_params/drivable_area_expansion.param.yaml
+      #               影响上游 drivable bound；最终边界还取决于 Lanelet2 地图和参考路径。
+      #   [SRC-PARAM] universe/autoware_universe/planning/behavior_path_planner/
+      #               autoware_behavior_path_static_obstacle_avoidance_module/include/autoware/
+      #               behavior_path_static_obstacle_avoidance_module/parameter_helper.hpp
+      #               getOrDeclareParameter()：把 [CFG-AVOID] 键读入 AvoidanceParameters。
+      #   [SRC-OBJ]   同模块 src/scene.cpp:createObjectData()，以及
+      #               src/utils.cpp:createEnvelopePolygon()/fillObjectEnvelopePolygon()：
+      #               从运行时 PredictedObject 的 pose/shape 构造并稳定 envelope polygon。
+      #   [SRC-LAT]   同模块 src/utils.cpp:calcEnvelopeOverhangDistance()/getAvoidMargin()/
+      #               calcShiftLength()：计算 overhang、可用横向余量和最终 shift。
+      #   [SRC-VEH]   autoware_behavior_path_planner_common/include/autoware/
+      #               behavior_path_planner_common/data_manager.hpp:init_parameters()：
+      #               将 [CFG-VEH] 转为 vehicle_width、base_link2front/base_link2rear。
+      #   [SRC-LON]   core/autoware_core/common/autoware_motion_utils/src/trajectory/
+      #               path_shift.cpp:calc_longitudinal_dist_from_jerk()。
+      #   [SRC-HELP]  同静态绕障模块 include/autoware/
+      #               behavior_path_static_obstacle_avoidance_module/helper.hpp：
+      #               选择 prepare distance、jerk、速度和前后纵向固定距离。
       #
       # 符号：
-      #   v_ego       : 当前自车速度 [m/s]
-      #   v_calc      : 横移距离计算采用的速度 [m/s]，低速时受 min_slow_down_speed 等限制
-      #   W_ego       : 自车总宽度 [m]，来自 vehicle_info.param.yaml
-      #   W_env       : 障碍物 envelope polygon 的等效横向宽度 [m]
-      #   y_obj       : 障碍物中心相对参考路径中心线的横向偏移 [m]
-      #   M_hard      : hard_margin；停放车辆可改用 hard_margin_for_parked_vehicle
-      #   M_soft      : 实际采用的软余量，0 <= M_soft <= soft_margin
+      #   v_ego       : 当前 self_odometry 速度 [m/s]；运行时数据，[SRC-HELP]
+      #   v_calc      : 源码用于横移计算的速度；由当前速度、constraints.lateral.velocity
+      #                 和 nominal_avoidance_speed 按分支选择，[CFG-AVOID]+[SRC-HELP]
+      #   W_ego       : vehicle_width=0.98 m，[CFG-VEH]+[SRC-VEH]
+      #   W_env       : 运行时 PredictedObject shape 经 envelope_buffer_margin 外扩后的
+      #                 envelope 横向宽度；不是一个独立 YAML 参数，[SRC-OBJ]
+      #   y_obj       : 矩形近似中，障碍物中心相对参考路径的横向偏移；来自运行时
+      #                 object pose + reference path。源码没有名为 y_obj 的参数，[SRC-OBJ]
+      #   M_hard      : 当前目标类型的 hard_margin；仅车辆型 parked 目标改用
+      #                 hard_margin_for_parked_vehicle，[CFG-AVOID]+[SRC-LAT]
+      #   M_soft      : 实际采用的软余量，0 <= M_soft <= soft_margin，[CFG-AVOID]+[SRC-LAT]
       #   M_lat       : 实际总横向余量 [m]
       #   L_shift     : 所需横向偏移量绝对值 [m]
-      #   j_lat       : 横向 jerk 绝对值 [m/s^3]
-      #   a_lat_max   : 最大横向加速度 [m/s^2]
+      #   j_lat       : constraints.lateral.min/max_jerk_values，[CFG-AVOID]+[SRC-HELP]
+      #   a_lat_max   : constraints.lateral.max_accel_values，[CFG-AVOID]
       #
       # [A] 静态目标判定（简化表达）
       #   目标速度连续高于 th_moving_speed 且持续超过 th_moving_time
       #     => 判为 moving，排除出本静态绕障模块。
       #   反之，且目标类型/区域/车道等过滤通过 => 可成为静态绕障候选。
+      #   阈值来源：[CFG-AVOID] avoidance.target_object.<type>.th_moving_*；
+      #   目标速度来源：运行时 PredictedObject twist，[SRC-OBJ]。
       #
       # [B] 实际横向安全余量
       #   普通目标：M_lat = hard_margin + M_soft
@@ -58,6 +90,8 @@
       #   其中 0 <= M_soft <= soft_margin
       #   最小总余量 = hard_margin（或 parked hard margin）
       #   最大总余量 = hard_margin（或 parked hard margin） + soft_margin
+      #   来源：[CFG-AVOID] avoidance.target_object.<type>.lateral_margin.*；
+      #         [SRC-LAT] getAvoidMargin()。
       #
       # [C] 所需横向偏移量
       #   官方概念式（带方向符号）：
@@ -65,6 +99,10 @@
       #   对近似轴对齐矩形，偏移量绝对值可写为：
       #     L_shift ~= max(0, W_ego/2 + W_env/2 + M_lat - abs(y_obj))
       #   障碍物越宽、越靠路径中心、margin 越大 => L_shift 越大。
+      #   重要：abs(y_obj) 是对源码 overhang_distance 的矩形化推导，不是 YAML 参数。
+      #   源码实际使用 envelope 上最靠近参考路径的点：
+      #     overhang_points.front().first，[SRC-LAT] calcEnvelopeOverhangDistance()；
+      #     shift 由 [SRC-LAT] calcShiftLength() 计算。
       #
       # [D] 横向空间成功条件
       #   D_bound      = 参考路径中心到可行驶边界的横向距离
@@ -76,23 +114,30 @@
       #   横向可行条件：L_shift <= L_limit
       #   若连 hard_drivable_bound_margin 都无法满足，本模块通常不能形成可行 shift，
       #   应由下游 obstacle_stop / obstacle_cruise 等模块兜底。
+      #   D_bound 来源：运行时 reference path 左/右边界（Lanelet2 地图及上游扩展结果）；
+      #   M_bound/shift 上限来源：[CFG-AVOID]，计算来源：[SRC-LAT] getAvoidMargin()。
       #
       # [E] 横移所需纵向距离（PathShifter constant-jerk 公式）
       #   D_shift = 4 * abs(v_calc) * cbrt(0.5 * abs(L_shift) / abs(j_lat))
+      #   来源：[SRC-LON] calc_longitudinal_dist_from_jerk()。
       #   结论：
       #     - 速度翻倍 => D_shift 约翻倍；
       #     - shift 增大 => D_shift 按立方根增大；
       #     - jerk 增大 => D_shift 按 jerk 的负立方根缩短，但动作更急。
       #
       # [F] 准备距离
-      #   标称：D_prepare_nom = max(v_ego * max_prepare_time, min_prepare_distance)
+      #   标称：D_prepare_nom = max(v_prepare * max_prepare_time, min_prepare_distance)
       #   近距放宽参考：D_prepare_min = max(v_ego * min_prepare_time, min_prepare_distance)
-      #   具体使用分支与本机 Autoware 版本有关，请结合源码/debug 验证。
+      #   其中 v_prepare 在低速时可能被 constraints.lateral.velocity[0] 抬高；
+      #   来源：[CFG-AVOID] avoidance.avoidance.longitudinal.* 与 constraints.lateral.velocity；
+      #         [SRC-HELP] getNominalPrepareDistance()/isEnoughPrepareDistance()。
       #
       # [G] envelope 前后纵向缓冲
-      #   D_front = longitudinal_margin + (consider_front_overhang ? front_overhang : 0)
-      #   D_rear  = longitudinal_margin + (consider_rear_overhang  ? rear_overhang  : 0)
-      #   front_overhang / rear_overhang 来自 vehicle_info.param.yaml。
+      #   D_front = longitudinal_margin + (consider_front_overhang ? base_link2front : 0)
+      #   D_rear  = longitudinal_margin +
+      #             (consider_rear_overhang ? base_link2rear + object.length : 0)
+      #   本车 base_link2front = wheel_base + front_overhang = 1.06 m；
+      #   base_link2rear = rear_overhang = 0.24 m。[CFG-VEH]+[SRC-VEH]+[SRC-HELP]
       #
       # [H] 从当前参考点到障碍物 envelope 前缘的最低纵向可行距离（标称）
       #   D_required_nom ~= D_prepare_nom + D_shift(j_nominal) + D_front
@@ -101,15 +146,21 @@
       #     S_available >= D_prepare_min + D_shift(j_max_usable) + D_front
       #   若仍不满足 => 常见 debug 原因为 INSUFFICIENT_LONGITUDINAL_DISTANCE。
       #
-      # [I] jerk 与横向加速度联合限制（四阶段 constant-jerk 的近似峰值）
+      # [I] jerk 与横向加速度联合限制（工程校核近似，不是 getMinAvoidanceDistance 的原式）
       #   a_peak ~= cbrt(0.5 * L_shift * j_lat^2)
       #   必须满足 a_peak <= a_lat_max，因此：
       #   j_max_by_accel ~= sqrt(2 * a_lat_max^3 / max(L_shift, epsilon))
       #   j_max_usable = min(插值得到的 max_jerk_values, j_max_by_accel)
+      #   参数来源：[CFG-AVOID] constraints.lateral.*。
+      #   源码中 max_accel_values 用于 calc_shift_time_from_jerk()/PathShifter 加速度限制，
+      #   而 [SRC-HELP] getMinAvoidanceDistance()/getSharpAvoidanceDistance() 的距离公式
+      #   直接使用 jerk 与 v_calc；不要把本工程近似误认为源码中的显式 jerk clamp。
       #
       # [J] 停车距离工程校核（不等同于 stop.max_distance）
       #   D_stop ~= v_ego * T_delay + v_ego^2 / (2 * abs(a_dec)) + D_margin
       #   其中 T_delay 包括感知/规划/控制延迟；a_dec 应取实车可稳定达到的减速度。
+      #   T_delay、D_margin 是实测/工程假设，不来自本 YAML；a_dec 应以实车制动测试为准，
+      #   可用 [CFG-AVOID] constraints.longitudinal.* 作为规划侧声明值对照。
       #   stop.max_distance 只是本模块在未批准/yield 等状态下插入停车点的搜索范围，
       #   不能替代物理停车距离校核。
       #
@@ -119,7 +170,7 @@
       #     L_base_to_front = wheel_base + front_overhang = 0.82 + 0.24 = 1.06 m
       #   若现场量的是“车头到障碍物距离”，与 base_link 弧长距离换算时需考虑该偏置。
       #
-      # [L] 1 m/s 完整数值示例（UNKNOWN 椅子，使用本文件当前参数）
+      # [L] 1 m/s 完整数值示例（UNKNOWN 类型 —— 本系统感知模块输出的实际障碍物类型）
       # ------------------------------------------------------------------------
       # 用途：
       #   本例把 [A]~[J] 的公式串起来，说明“目标能被识别”不等于“纵横向均可绕”。
@@ -127,81 +178,100 @@
       #   路径曲率、对象 envelope polygon、shift-line 修剪、RTC/approval 和速度限制影响。
       #
       # 已知/假设：
-      #   v_ego = v_calc = 1.00 m/s
-      #   W_ego = 0.98 m                         # vehicle_info.param.yaml
-      #   front_overhang = 0.24 m               # vehicle_info.param.yaml
-      #   椅子原始横向宽度 W_obj = 0.50 m       # 示例测量值，不是本文件参数
-      #   椅子位于路径中心 y_obj = 0.00 m
+      #   v_ego = 1.00 m/s                       # 运行时 self_odometry
+      #   W_ego = 0.98 m                         # [CFG-VEH] vehicle_width
+      #   base_link2front = 1.06 m               # [CFG-VEH] wheel_base+front_overhang
+      #   椅子原始横向宽度 W_obj = 0.50 m       # 运行时 PredictedObject shape 的示例值
+      #   椅子位于路径中心 y_obj = 0.00 m       # 运行时 object pose/path 的示例假设
       #   UNKNOWN 当前参数：
-      #     hard_margin = 0.00 m
-      #     soft_margin = 0.60 m
-      #     envelope_buffer_margin = 0.10 m
+      #     hard_margin = -0.20 m                # [CFG-AVOID] unknown.lateral_margin
+      #     soft_margin = 0.30 m                 # [CFG-AVOID] unknown.lateral_margin
+      #     envelope_buffer_margin = 0.05 m      # [CFG-AVOID] unknown
+      #     max_expand_ratio = 0.05              # [CFG-AVOID] unknown
       #     longitudinal_margin = 0.00 m
-      #   例中为便于手算，暂不计 max_expand_ratio 的距离相关附加膨胀。
+      #   UNKNOWN 在 [SRC-LAT] 的 unknown 分支不会执行 parked-vehicle 判定，
+      #   因而这里实际选择 hard_margin=-0.20，而不是
+      #   hard_margin_for_parked_vehicle=0.00。
+      #   目标距离 <= lower_distance_for_polygon_expansion(30 m) 时 distance_factor=1.0，
+      #   所以下例 buffer 仍为 0.05 m；更远目标才逐步应用 max_expand_ratio。
       #
       # 第 1 步：估算 envelope 宽度
       #   W_env ~= W_obj + 2 * envelope_buffer_margin
-      #         ~= 0.50 + 2 * 0.10 = 0.70 m
+      #         ~= 0.50 + 2 * 0.05 = 0.60 m
+      #   W_obj 来源：运行时 /perception/object_recognition/objects 的 shape；
+      #   buffer 来源：[CFG-AVOID]；实际 polygon 构造来源：[SRC-OBJ]。
       #
       # 第 2 步：计算横向最低/理想偏移
       #   最低硬约束（M_soft_actual = 0）：
       #     L_shift_min
       #       ~= W_ego/2 + W_env/2 + hard_margin - abs(y_obj)
-      #       ~= 0.98/2 + 0.70/2 + 0.00 - 0.00
-      #       ~= 0.84 m
-      #   空间充足时的理想偏移（M_soft_actual = soft_margin = 0.60）：
-      #     L_shift_desired ~= 0.84 + 0.60 = 1.44 m
-      #   因此实际 L_shift 通常位于 [0.84, 1.44] m，取决于可行驶边界能否容纳软余量。
+      #       ~= 0.98/2 + 0.60/2 - 0.20 - 0.00
+      #       ~= 0.59 m
+      #     参数逐项来源：
+      #       W_ego      -> [CFG-VEH] vehicle_width=0.98
+      #       W_env      -> 运行时 object shape + [CFG-AVOID] envelope_buffer_margin，[SRC-OBJ]
+      #       hard_margin-> [CFG-AVOID] avoidance.target_object.unknown.lateral_margin.hard_margin
+      #       abs(y_obj) -> 运行时 object pose 与 reference path 的横向关系；仅为近似项，
+      #                     源码实际使用 [SRC-LAT] overhang_points.front().first
+      #   空间充足时的理想偏移（M_soft_actual = soft_margin = 0.30）：
+      #     L_shift_desired ~= 0.59 + 0.30 = 0.89 m
+      #   因此当前近场示例的 L_shift 通常位于 [0.59, 0.89] m，
+      #   取决于可行驶边界能否容纳全部 soft margin。
       #
       # 第 3 步：横向空间示例
       #   假设绕行侧“路径中心到 drivable bound”的距离 D_bound = 1.60 m：
       #     使用 soft_drivable_bound_margin = 0.30：
       #       L_bound_soft ~= 1.60 - 0.98/2 - 0.30 = 0.81 m
-      #       0.81 < L_shift_min(0.84) => 连软边界条件下最低偏移都不可行。
+      #       0.59 <= 0.81 < 0.89 => 最低偏移可行，但 soft margin 会被压缩；
+      #       可使用的 soft margin 约为 0.81 - 0.59 = 0.22 m。
       #     放宽到 hard_drivable_bound_margin = 0.10：
       #       L_bound_hard ~= 1.60 - 0.98/2 - 0.10 = 1.01 m
-      #       0.84 <= 1.01 < 1.44
-      #       => 最低硬安全偏移可行，但 0.60 m 的全部 soft margin 无法保留；
-      #          可使用的软余量上限约为 1.01 - 0.84 = 0.17 m。
+      #       L_shift_desired(0.89) <= 1.01 => 在该几何假设下可容纳完整 soft margin。
       #   同时还需满足：
       #     L_shift <= max_left/right_shift_length
       #     L_shift <= max_deviation_from_lane
-      #   本文件 max_deviation_from_lane = 1.00 m，因此它会把实际偏移上限进一步限制为 1.00 m。
+      #   本文件 max_deviation_from_lane = 1.00 m，大于当前理想偏移 0.89 m，
+      #   因此在本例中不是瓶颈；实际 D_bound 来自 Lanelet2/参考路径边界，[CFG-BOUND]+[SRC-LAT]。
       #
       # 第 4 步：1 m/s 下的准备距离
-      #   D_prepare_nom = max(1.00 * max_prepare_time(1.00), 0.80) = 1.00 m
+      #   constraints.lateral.velocity[0]=1.39 m/s；[SRC-HELP] 的 v_prepare 会取 1.39：
+      #   D_prepare_nom = max(1.39 * max_prepare_time(1.00), 0.80) = 1.39 m
       #   D_prepare_min = max(1.00 * min_prepare_time(0.50), 0.80) = 0.80 m
-      #   D_front = longitudinal_margin(0.00) + front_overhang(0.24) = 0.24 m
+      #   D_front = longitudinal_margin(0.00) + base_link2front(1.06) = 1.06 m
+      #   来源：[CFG-AVOID]+[CFG-VEH]+[SRC-VEH]+[SRC-HELP]。
       #
       # 第 5 步：标称平滑绕障的纵向最低距离
       #   1 m/s 低于 constraints.lateral.velocity[0] = 1.39 m/s，
       #   因此示例使用第一档 min_jerk_values.avoid = 0.20 m/s^3。
-      #   对最低偏移 L_shift_min = 0.84 m：
+      #   对最低偏移 L_shift_min = 0.59 m：
       #     D_shift_nom
-      #       = 4 * 1.00 * cbrt(0.5 * 0.84 / 0.20)
-      #       ~= 5.12 m
-      #     D_required_nom ~= 1.00 + 5.12 + 0.24 = 6.36 m
-      #   对理想偏移 L_shift_desired = 1.44 m：
-      #     D_shift_nom ~= 6.13 m
-      #     D_required_nom ~= 1.00 + 6.13 + 0.24 = 7.37 m
+      #       = 4 * 1.00 * cbrt(0.5 * 0.59 / 0.20)
+      #       ~= 4.55 m
+      #     D_required_nom ~= 1.39 + 4.55 + 1.06 = 7.00 m
+      #   对理想偏移 L_shift_desired = 0.89 m：
+      #     D_shift_nom ~= 5.22 m
+      #     D_required_nom ~= 1.39 + 5.22 + 1.06 = 7.67 m
+      #   D_shift 公式来源：[SRC-LON]；参数选择来源：[CFG-AVOID]+[SRC-HELP]。
       #
-      # 第 6 步：受横向加速度约束的“近距放宽”极限近似
-      #   当前 a_lat_max = 0.50 m/s^2，虽然 max_jerk_values = 3.00，
-      #   实际可用 jerk 还受 j_max_by_accel 限制：
-      #     对 L_shift=0.84：
-      #       j_max_by_accel ~= sqrt(2*0.50^3/0.84) ~= 0.546 m/s^3
-      #       j_max_usable ~= min(3.00, 0.546) = 0.546
-      #       D_required_sharp ~= 0.80 + 3.67 + 0.24 = 4.71 m
-      #     对 L_shift=1.44：
-      #       j_max_by_accel ~= sqrt(2*0.50^3/1.44) ~= 0.417 m/s^3
-      #       D_required_sharp ~= 0.80 + 4.80 + 0.24 = 5.84 m
+      # 第 6 步：源码 sharp-distance 参考与横向加速度校核
+      #   [SRC-HELP] getSharpAvoidanceDistance() 在 1 m/s 时采用
+      #   v_calc=1.39 m/s、max_jerk=3.00 m/s^3：
+      #     D_shift_sharp_code(L=0.59) ~= 2.57 m
+      #     D_shift_sharp_code(L=0.89) ~= 2.94 m
+      #   若与 D_prepare_nom=1.39、D_front=1.06 相加，参考总距离约为 5.02/5.39 m；
+      #   不同 shift-line/停车分支使用的 prepare 条件不同，不能把该值当成唯一状态阈值。
+      #   另按 [I] 做工程加速度校核：
+      #     j_max_by_accel(L=0.59) ~= 0.651 m/s^3
+      #     j_max_by_accel(L=0.89) ~= 0.530 m/s^3
+      #   这是实车可跟踪性校核；源码通过 calc_shift_time_from_jerk() 和 PathShifter
+      #   使用 max_accel_values，并非在 sharp-distance 公式中直接执行上述 clamp。
       #
       # 第 7 步：把 base_link 距离换算为车头距离
       #   D_front_bumper = D_base_link - 1.06
       #   因而上述“新建绕障”的近似最低车头距离为：
-      #     最低硬偏移、近距放宽：4.71 - 1.06 ~= 3.65 m
-      #     理想偏移、近距放宽：  5.84 - 1.06 ~= 4.78 m
-      #     最低硬偏移、标称平滑：6.36 - 1.06 ~= 5.30 m
+      #     最低硬偏移、源码 sharp 参考：5.02 - 1.06 ~= 3.96 m
+      #     理想偏移、源码 sharp 参考：  5.39 - 1.06 ~= 4.33 m
+      #     最低硬偏移、标称平滑：      7.00 - 1.06 ~= 5.94 m
       #   结论：1 m/s 时，“车头 2 m”更适合作为停止/禁止新建急绕的近场边界，
       #   而不是保证能够从零开始成功生成平滑绕障的距离。
       #
@@ -214,12 +284,12 @@
       #   但 obstacle_stop 的 stop_margin、实际控制延迟和地面附着仍必须单独实测。
       #
       # 第 9 步：debug 状态与本例的对应关系
-      #   S_available >= 6.36~7.37 m：
-      #     更可能生成标称平滑 SAME_DIRECTION_SHIFT。
-      #   4.71~5.84 m <= S_available < 6.36~7.37 m：
-      #     可能使用压缩 soft margin / 增大 jerk / 降速，出现 CLOSE_DISTANCE_AVOIDANCE。
-      #   S_available < 约 4.71 m（以最低偏移计算）：
-      #     更可能为 INSUFFICIENT_LONGITUDINAL_DISTANCE，应由停车模块兜底。
+      #   S_available 充分且横向边界满足：更可能正常生成 shift（不是 SAME_DIRECTION_SHIFT）。
+      #   SAME_DIRECTION_SHIFT 表示计算出的 shift 指向障碍物一侧，是无效候选/debug 原因；
+      #   来源：src/shift_line_generator.cpp 与 [SRC-LAT] calcShiftLength()。
+      #   纵向距离不足：可能为 INSUFFICIENT_LONGITUDINAL_DISTANCE。
+      #   CLOSE_DISTANCE_AVOIDANCE 仅在车辆停止且 avoidance_for_close_vehicle.policy
+      #   不是 ignore 时触发；当前文件 policy=ignore，因此按本文件运行时不应进入该状态。
       #   若 L_shift 或新旧 shift 差值过小：
       #     可能出现 LESS_EXECUTION_SHIFT 或被 trim/quantize 合并。
       # ========================================================================
@@ -286,9 +356,12 @@
         #      M_hard_selected = parked ? hard_margin_for_parked_vehicle : hard_margin
         # 4) 横向偏移近似：
         #      L_shift ~= max(0, W_ego/2 + W_env/2 + M_lat - abs(y_obj))
+        #      abs(y_obj) 不是配置项；它由运行时 object pose 与 reference path 推导。
+        #      源码实际以 [SRC-LAT] overhang_points.front().first 代替该矩形近似项。
         # 5) 纵向固定缓冲：
-        #      D_front = longitudinal_margin + optional(front_overhang)
-        #      D_rear  = longitudinal_margin + optional(rear_overhang)
+        #      D_front = longitudinal_margin + optional(base_link2front)
+        #      D_rear  = longitudinal_margin + optional(base_link2rear + object.length)
+        #      来源：[CFG-AVOID]+[CFG-VEH]+[SRC-VEH]+[SRC-HELP]。
         # ======================================================================
         # 小型车 (car)
         # ======================================================================
@@ -428,11 +501,12 @@
           th_error_eclipse_long_radius : 0.6
 
         # ======================================================================
-        # 未知类型 (unknown)
-        #   对未识别类型的物体采用更保守的策略：更大的安全边距和缓冲区。
+        # 未知类型 (unknown) —— 本系统静态绕障的主要触发类型
+        #   本系统感知模块将静态障碍物（椅子、路障、停放车辆等）统一标记为 unknown 类型，
+        #   因此以下参数是本模块实际生效的核心绕障参数。
         # ======================================================================
         unknown:
-         # 判定为运动物体的最低速度 [m/s]，低于此值视为静止物体进入避障考虑
+          # 判定为运动物体的最低速度 [m/s]，低于此值视为静止物体进入避障考虑
           #   值越大 → 更多慢速移动的车辆被当作静止障碍物处理，避让更频繁
           #   值越小 → 只有几乎完全停止的车辆才触发避让，减少不必要的绕行
           # official default (autoware_launch/main): th_moving_speed: 0.28
@@ -464,6 +538,9 @@
             #   envelope 边界发生几何重叠，实车使用前必须做 footprint 碰撞验证。
             # official default (autoware_launch/main): hard_margin: -0.2
             hard_margin: -0.2
+            # 来源：[CFG-AVOID] 本键；由 [SRC-PARAM] 读入 lateral_hard_margin，
+            # [SRC-LAT] getAvoidMargin() 对 UNKNOWN 直接选用该值。
+            # UNKNOWN 不进入车辆 parked 判定分支，所以通常不会改用下面的 parked 值。
             # 停放车辆的特殊硬边界 [m]（专门针对停放车辆的更严格安全距离）
             #   值越大 → 对停放车辆保持更大距离（更保守），因为停放车辆可能突然开门
             #   值越小 → 更贴近停放车辆通过（更激进）
@@ -480,15 +557,14 @@
           # official default (autoware_launch/main): envelope_buffer_margin: 0.1
           envelope_buffer_margin: 0.05
           # 当前 UNKNOWN 数值例（1 m/s 示例同上）：
-          #   hard_margin=0.0，soft_margin=0.6
-          #   => M_lat 范围 [0.0, 0.6] m。
-          #   若椅子原始宽 0.50 m、buffer=0.10 m、位于路径中心，
-          #   忽略 max_expand_ratio 附加膨胀时：
-          #     W_env ~= 0.70 m
-          #     L_shift_min ~= 0.84 m
-          #     L_shift_desired ~= 1.44 m
-          #   但本文件 max_deviation_from_lane=1.0 m，实际理想偏移 1.44 m 会被横向上限截断；
-          #   若 1.0 m 仍无法满足 footprint+hard margin，则不会成功绕行。
+          #   hard_margin=-0.2，soft_margin=0.3
+          #   => 非 parked UNKNOWN 的 M_lat 范围 [-0.2, 0.1] m。
+          #   若椅子原始宽 0.50 m、buffer=0.05 m、位于路径中心且距离 <=30 m：
+          #     W_env ~= 0.60 m
+          #     L_shift_min ~= 0.59 m
+          #     L_shift_desired ~= 0.89 m
+          #   当前 max_deviation_from_lane=1.0 m 大于理想偏移 0.89 m；
+          #   是否可绕主要继续受 drivable bound 和左右 shift 上限约束。
           # 椭圆近似时长轴半径的误差阈值 [m]
           #   当物体形状用椭圆近似时，长轴半径误差超过此值则可能触发重新计算
           #   值越大 → 容忍更大的形状近似误差，减少重新计算次数
@@ -597,10 +673,13 @@
           th_error_eclipse_long_radius : 0.6
 
         # 距离相关 envelope 膨胀区间 [m]
-        #   d_obj <= lower_distance：距离膨胀比例取 0，避免近距离目标被过度外扩。
-        #   lower_distance < d_obj < upper_distance：按距离逐步应用 max_expand_ratio。
-        #   d_obj >= upper_distance：达到配置允许的最大距离膨胀比例。
-        #   注意：这是 envelope_buffer_margin 的距离补偿逻辑，不是聚类/点云膨胀。
+        #   源码：[SRC-OBJ] scene.cpp:createObjectData()：
+        #     ratio = clamp(d_obj-lower, 0, upper) / upper
+        #     distance_factor = 1 + max_expand_ratio * ratio
+        #   因而 d_obj <= lower 时 ratio=0；在 lower 到 lower+upper 间线性增加；
+        #   d_obj >= lower+upper 时 ratio=1。当前值对应 30~130 m，而不是 30~100 m。
+        #   distance_factor 用于 envelope_buffer_margin，并参与最大 hard margin 计算；
+        #   这是规划侧 polygon 补偿，不是聚类/点云膨胀。
         # official default (autoware_launch/main): lower_distance_for_polygon_expansion: 30.0
         lower_distance_for_polygon_expansion: 30.0
         # official default (autoware_launch/main): upper_distance_for_polygon_expansion: 100.0
@@ -1024,6 +1103,8 @@
         #
         # 所需 shift（矩形近似）：
         #   L_shift ~= max(0, W_ego/2 + W_env/2 + M_lat - abs(y_obj))
+        #   来源：W_ego->[CFG-VEH]；W_env/y_obj->运行时 object+path，[SRC-OBJ]；
+        #         margin->[CFG-AVOID]；源码实际计算->[SRC-LAT]。
         #
         # 可用 shift：
         #   L_bound ~= D_center_to_bound - W_ego/2 - M_bound
@@ -1036,16 +1117,16 @@
         #   |delta_shift| < th_small_shift_length => 小 shift 可能与相邻 shift 合并
         #   quantize_size 会进一步量化 shift，抑制细小变化。
         #
-        # 1 m/s UNKNOWN 椅子例：
-        #   由顶部 [L] 得 L_shift_min ~= 0.84 m、L_shift_desired ~= 1.44 m。
+        # 1 m/s UNKNOWN 例（本系统感知模块输出类型）：
+        #   由顶部 [L] 得 L_shift_min ~= 0.59 m、L_shift_desired ~= 0.89 m。
         #   当前 th_avoid_execution=0.12 m 仅用于“已开始 shifting”的状态判断，
         #   不能把 0.12 m 当成绕开椅子的安全偏移量。
         #   当前 th_small_shift_length=0.05 m：
         #     若相邻规划帧只改变 0.03 m，可能被视为小变化而合并；
         #     若目标几何抖动造成 0.10~0.20 m 变化，则仍可能重建 shift 并引发 path jitter。
         #   当前 max_deviation_from_lane=1.00 m：
-        #     可容纳最低 0.84 m 偏移，但容纳不了完整 1.44 m 理想偏移；
-        #     实际必须压缩 soft margin，并同时满足 drivable bound。
+        #     大于当前 0.89 m 理想偏移，本例中不构成上限；
+        #     实际仍必须同时满足 Lanelet2/reference-path 的 drivable bound。
         # 横向控制参数
         #   控制自车绕行时的横向偏移量、偏移速度、可行驶区域边界等。
         # ----------------------------------------------------------------------
@@ -1067,7 +1148,7 @@
           #   值越大 → 可用横向空间变小、路径更远离边界（更保守）。
           #   值越小 → 更充分利用边界附近空间；不足时可继续放宽到 hard margin。
           # official default (autoware_launch/main): soft_drivable_bound_margin: 0.3
-          soft_drivable_bound_margin: 0.3
+          soft_drivable_bound_margin: 0.15
           # 硬可行驶边界余量 [m]：软余量放宽后仍必须保留的最低边界距离。
           #   值越大 → 可行驶区域向内收缩更多（更保守）。
           #   值越小 → 更接近道路边界；通常应满足 0 <= hard <= soft。
@@ -1105,42 +1186,48 @@
         # 纵向可行性公式
         # ----------------------------------------------------------------------
         # 准备距离：
-        #   D_prepare_nom = max(v_ego * max_prepare_time, min_prepare_distance)
+        #   D_prepare_nom = max(v_prepare * max_prepare_time, min_prepare_distance)
         #   D_prepare_min = max(v_ego * min_prepare_time, min_prepare_distance)
+        #   来源：[CFG-AVOID]+[SRC-HELP]；低速时 v_prepare 可能取
+        #   constraints.lateral.velocity[0]，不一定等于 v_ego。
         #
         # 横移纵向距离：
         #   D_shift(j) = 4 * v_calc * cbrt(0.5 * abs(L_shift) / abs(j))
         #
         # envelope 前缓冲：
-        #   D_front = longitudinal_margin + optional(front_overhang)
+        #   D_front = longitudinal_margin + optional(base_link2front)
+        #   来源：[CFG-AVOID]+[CFG-VEH]+[SRC-VEH]+[SRC-HELP]。
         #
         # 标称最低距离：
         #   D_required_nom = D_prepare_nom + D_shift(j_min_avoid) + D_front
         #
         # 近距放宽最低距离：
-        #   D_required_sharp = D_prepare_min + D_shift(j_max_usable) + D_front
+        #   工程近似：D_required_sharp ~= D_prepare + D_shift(j_max) + D_front
+        #   源码按分支调用 [SRC-HELP] getSharpAvoidanceDistance()/getMinAvoidanceDistance()
+        #   和 isEnoughPrepareDistance()，不存在一个统一的 D_required_sharp 变量。
         #
         # 判定：
         #   S_available >= D_required_nom   => 标称平滑绕障可行
-        #   D_required_sharp <= S_available < D_required_nom
-        #                                  => 可能进入 CLOSE_DISTANCE_AVOIDANCE/放宽策略
-        #   S_available < D_required_sharp => INSUFFICIENT_LONGITUDINAL_DISTANCE
+        #   sharp 参考 <= S_available < D_required_nom => 可能使用增大 jerk/降速等放宽策略
+        #   S_available < sharp 参考 => 可能为 INSUFFICIENT_LONGITUDINAL_DISTANCE
+        #   CLOSE_DISTANCE_AVOIDANCE 还要求 ego 已停止且 close policy != ignore；
+        #   当前 avoidance_for_close_vehicle.policy=ignore，因此本配置不会由该分支进入 CLOSE。
         #
         # v_calc 与减速：
         #   模块会结合 nominal_avoidance_speed、min_slow_down_speed、
         #   buf_slow_down_speed 及纵向 accel/jerk 约束寻找可行速度。
         #
-        # 1 m/s 当前数值例（UNKNOWN 椅子，W_env~=0.70 m，y_obj=0）：
-        #   L_shift_min~=0.84 m，L_shift_desired~=1.44 m
-        #   D_prepare_nom=max(1.0*1.0,0.8)=1.00 m
+        # 1 m/s 当前数值例（UNKNOWN 类型，W_env~=0.60 m，y_obj=0）：
+        #   L_shift_min~=0.59 m，L_shift_desired~=0.89 m
+        #   D_prepare_nom=max(1.39*1.0,0.8)=1.39 m
         #   D_prepare_min=max(1.0*0.5,0.8)=0.80 m
-        #   D_front=0.00+0.24=0.24 m
+        #   D_front=0.00+1.06=1.06 m
         #   j_nom=0.20 m/s^3：
-        #     D_required_nom(L=0.84) ~= 6.36 m
-        #     D_required_nom(L=1.44) ~= 7.37 m
-        #   a_lat_max=0.50 m/s^2 约束下：
-        #     D_required_sharp(L=0.84) ~= 4.71 m
-        #     D_required_sharp(L=1.44) ~= 5.84 m
+        #     D_required_nom(L=0.59) ~= 7.00 m
+        #     D_required_nom(L=0.89) ~= 7.67 m
+        #   源码 sharp-distance 参考（v_calc=1.39、j_max=3.0）：
+        #     D_required_sharp_ref(L=0.59) ~= 5.02 m
+        #     D_required_sharp_ref(L=0.89) ~= 5.39 m
         #   以上距离从 base_link 到 obstacle envelope 前缘计；换算到车头约分别减 1.06 m。
         # 纵向控制参数
         #   控制避障时的减速行为：何时减速、减到多慢、以及避障时的目标速度。
@@ -1162,7 +1249,7 @@
           # official default (autoware_launch/main): min_prepare_distance: 1.0
           min_prepare_distance: 0.8
           # 1 m/s 例：
-          #   D_prepare_nom=max(1.0*max_prepare_time(1.0),0.8)=1.0 m
+          #   D_prepare_nom=max(1.39*max_prepare_time(1.0),0.8)=1.39 m
           #   D_prepare_min=max(1.0*min_prepare_time(0.5),0.8)=0.8 m
           #   若速度降到 0.35 m/s：
           #     nominal=max(0.35*1.0,0.8)=0.8 m，准备距离由 min_prepare_distance 主导。
@@ -1346,6 +1433,7 @@
       #
       # PathShifter：
       #   D_shift = 4*v*cbrt(0.5*L_shift/j)
+      #   来源：[SRC-LON] calc_longitudinal_dist_from_jerk()。
       #
       # 峰值横向加速度近似：
       #   a_peak ~= cbrt(0.5*L_shift*j^2)
@@ -1355,13 +1443,11 @@
       # 1 m/s 当前数值例：
       #   1.0 < velocity[0](1.39)，示例采用第一档：
       #     a_lat_max=0.50，j_min=0.20，j_max_param=3.00
-      #   对 L_shift=0.84：
-      #     j_max_by_accel~=sqrt(2*0.50^3/0.84)=0.546
-      #     j_max_usable~=min(3.00,0.546)=0.546 m/s^3
-      #   对 L_shift=1.44：
-      #     j_max_by_accel~=0.417 m/s^3
-      #   因此仅把 max_jerk_values 设得很大，并不会无限缩短横移距离；
-      #   max_accel_values 会成为实际限制，而且控制器还必须能跟踪该横向动态。
+      #   对 L_shift=0.59：j_max_by_accel~=sqrt(2*0.50^3/0.59)=0.651 m/s^3
+      #   对 L_shift=0.89：j_max_by_accel~=0.530 m/s^3
+      #   上述 j_max_by_accel 是工程校核值，不是源码中的显式 jerk clamp；
+      #   源码以 max_accel_values 调用 calc_shift_time_from_jerk() 并设置 PathShifter
+      #   横向加速度上限，控制器也必须能够跟踪该横向动态。
       #
       # 纵向停车/减速约束：nominal 值用于舒适规划，max 值用于放宽；
       # 若实车实际能力小于参数声明值，规划出的路径/速度将不可跟踪且存在安全风险。
@@ -1379,7 +1465,7 @@
           #   与 max_accel_values / min_jerk_values / max_jerk_values 一一对应
           #   当前设置：[低速, 中速, 高速] = [5km/h, 15km/h, 40km/h]
           # official default (autoware_launch/main): velocity: [1.39, 4.17, 11.1]
-          velocity: [1.39, 4.17, 11.1]
+          velocity: [1.0, 2.0, 3.0]
           # 各速度段的最大横向加速度 [m/s²]
           #   值越大 → 绕行动作更快更敏捷（乘客可能感到不适，侧倾更大）
           #   值越小 → 绕行动作更平缓（更舒适但避障响应更慢）

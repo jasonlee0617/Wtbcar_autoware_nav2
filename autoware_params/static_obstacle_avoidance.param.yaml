@@ -20,7 +20,209 @@
     #   减小阈值 → 更激进（更晚避让、更贴近障碍物、更快速的绕行动作）
     #   注：具体影响因参数而异，详见各参数注释。
     # ==========================================================================
+    # 官方默认值来源：autowarefoundation/autoware_launch 的 main 分支原始参数文件，
+    # 核对日期：2026-07-10。你的本地 Humble/固定 commit 可能不同，部署前请与
+    # /home/robot/autoware 中实际安装版本做 diff；本文件中的现有调参值保持不变。
+    # ==========================================================================
     avoidance:
+      # ========================================================================
+      # 0. 公式与符号总表（调参时先看这里）
+      # ========================================================================
+      # 说明：
+      #   - 下列公式用于解释 shift_line_base 的主要几何/运动学关系。
+      #   - Autoware 实际实现使用 envelope polygon、路径弧长、插值后的 jerk/accel 限制；
+      #     因此矩形宽度公式是便于调参的等价近似，最终以本机源码/debug 输出为准。
+      #   - 本文件只修改注释，不修改任何现有参数值。
+      #
+      # 符号：
+      #   v_ego       : 当前自车速度 [m/s]
+      #   v_calc      : 横移距离计算采用的速度 [m/s]，低速时受 min_slow_down_speed 等限制
+      #   W_ego       : 自车总宽度 [m]，来自 vehicle_info.param.yaml
+      #   W_env       : 障碍物 envelope polygon 的等效横向宽度 [m]
+      #   y_obj       : 障碍物中心相对参考路径中心线的横向偏移 [m]
+      #   M_hard      : hard_margin；停放车辆可改用 hard_margin_for_parked_vehicle
+      #   M_soft      : 实际采用的软余量，0 <= M_soft <= soft_margin
+      #   M_lat       : 实际总横向余量 [m]
+      #   L_shift     : 所需横向偏移量绝对值 [m]
+      #   j_lat       : 横向 jerk 绝对值 [m/s^3]
+      #   a_lat_max   : 最大横向加速度 [m/s^2]
+      #
+      # [A] 静态目标判定（简化表达）
+      #   目标速度连续高于 th_moving_speed 且持续超过 th_moving_time
+      #     => 判为 moving，排除出本静态绕障模块。
+      #   反之，且目标类型/区域/车道等过滤通过 => 可成为静态绕障候选。
+      #
+      # [B] 实际横向安全余量
+      #   普通目标：M_lat = hard_margin + M_soft
+      #   停放车辆：M_lat = hard_margin_for_parked_vehicle + M_soft
+      #   其中 0 <= M_soft <= soft_margin
+      #   最小总余量 = hard_margin（或 parked hard margin）
+      #   最大总余量 = hard_margin（或 parked hard margin） + soft_margin
+      #
+      # [C] 所需横向偏移量
+      #   官方概念式（带方向符号）：
+      #     shift = overhang_distance + M_lat + W_ego / 2
+      #   对近似轴对齐矩形，偏移量绝对值可写为：
+      #     L_shift ~= max(0, W_ego/2 + W_env/2 + M_lat - abs(y_obj))
+      #   障碍物越宽、越靠路径中心、margin 越大 => L_shift 越大。
+      #
+      # [D] 横向空间成功条件
+      #   D_bound      = 参考路径中心到可行驶边界的横向距离
+      #   M_bound      = 实际边界余量，可由 soft_drivable_bound_margin 放宽到 hard_drivable_bound_margin
+      #   L_bound      ~= D_bound - W_ego/2 - M_bound
+      #   L_limit      = min(方向对应的 max_left/right_shift_length,
+      #                      max_deviation_from_lane,
+      #                      L_bound)
+      #   横向可行条件：L_shift <= L_limit
+      #   若连 hard_drivable_bound_margin 都无法满足，本模块通常不能形成可行 shift，
+      #   应由下游 obstacle_stop / obstacle_cruise 等模块兜底。
+      #
+      # [E] 横移所需纵向距离（PathShifter constant-jerk 公式）
+      #   D_shift = 4 * abs(v_calc) * cbrt(0.5 * abs(L_shift) / abs(j_lat))
+      #   结论：
+      #     - 速度翻倍 => D_shift 约翻倍；
+      #     - shift 增大 => D_shift 按立方根增大；
+      #     - jerk 增大 => D_shift 按 jerk 的负立方根缩短，但动作更急。
+      #
+      # [F] 准备距离
+      #   标称：D_prepare_nom = max(v_ego * max_prepare_time, min_prepare_distance)
+      #   近距放宽参考：D_prepare_min = max(v_ego * min_prepare_time, min_prepare_distance)
+      #   具体使用分支与本机 Autoware 版本有关，请结合源码/debug 验证。
+      #
+      # [G] envelope 前后纵向缓冲
+      #   D_front = longitudinal_margin + (consider_front_overhang ? front_overhang : 0)
+      #   D_rear  = longitudinal_margin + (consider_rear_overhang  ? rear_overhang  : 0)
+      #   front_overhang / rear_overhang 来自 vehicle_info.param.yaml。
+      #
+      # [H] 从当前参考点到障碍物 envelope 前缘的最低纵向可行距离（标称）
+      #   D_required_nom ~= D_prepare_nom + D_shift(j_nominal) + D_front
+      #   标称成功：S_available >= D_required_nom
+      #   近距离放宽成功：
+      #     S_available >= D_prepare_min + D_shift(j_max_usable) + D_front
+      #   若仍不满足 => 常见 debug 原因为 INSUFFICIENT_LONGITUDINAL_DISTANCE。
+      #
+      # [I] jerk 与横向加速度联合限制（四阶段 constant-jerk 的近似峰值）
+      #   a_peak ~= cbrt(0.5 * L_shift * j_lat^2)
+      #   必须满足 a_peak <= a_lat_max，因此：
+      #   j_max_by_accel ~= sqrt(2 * a_lat_max^3 / max(L_shift, epsilon))
+      #   j_max_usable = min(插值得到的 max_jerk_values, j_max_by_accel)
+      #
+      # [J] 停车距离工程校核（不等同于 stop.max_distance）
+      #   D_stop ~= v_ego * T_delay + v_ego^2 / (2 * abs(a_dec)) + D_margin
+      #   其中 T_delay 包括感知/规划/控制延迟；a_dec 应取实车可稳定达到的减速度。
+      #   stop.max_distance 只是本模块在未批准/yield 等状态下插入停车点的搜索范围，
+      #   不能替代物理停车距离校核。
+      #
+      # [K] WTB 小车坐标参考（依据当前 vehicle_info）
+      #   W_ego ~= 0.98 m
+      #   base_link 位于后轴；base_link 到前保险杠：
+      #     L_base_to_front = wheel_base + front_overhang = 0.82 + 0.24 = 1.06 m
+      #   若现场量的是“车头到障碍物距离”，与 base_link 弧长距离换算时需考虑该偏置。
+      #
+      # [L] 1 m/s 完整数值示例（UNKNOWN 椅子，使用本文件当前参数）
+      # ------------------------------------------------------------------------
+      # 用途：
+      #   本例把 [A]~[J] 的公式串起来，说明“目标能被识别”不等于“纵横向均可绕”。
+      #   下列只是便于调参的矩形/constant-jerk 近似；实际结果还受 lanelet 边界、
+      #   路径曲率、对象 envelope polygon、shift-line 修剪、RTC/approval 和速度限制影响。
+      #
+      # 已知/假设：
+      #   v_ego = v_calc = 1.00 m/s
+      #   W_ego = 0.98 m                         # vehicle_info.param.yaml
+      #   front_overhang = 0.24 m               # vehicle_info.param.yaml
+      #   椅子原始横向宽度 W_obj = 0.50 m       # 示例测量值，不是本文件参数
+      #   椅子位于路径中心 y_obj = 0.00 m
+      #   UNKNOWN 当前参数：
+      #     hard_margin = 0.00 m
+      #     soft_margin = 0.60 m
+      #     envelope_buffer_margin = 0.10 m
+      #     longitudinal_margin = 0.00 m
+      #   例中为便于手算，暂不计 max_expand_ratio 的距离相关附加膨胀。
+      #
+      # 第 1 步：估算 envelope 宽度
+      #   W_env ~= W_obj + 2 * envelope_buffer_margin
+      #         ~= 0.50 + 2 * 0.10 = 0.70 m
+      #
+      # 第 2 步：计算横向最低/理想偏移
+      #   最低硬约束（M_soft_actual = 0）：
+      #     L_shift_min
+      #       ~= W_ego/2 + W_env/2 + hard_margin - abs(y_obj)
+      #       ~= 0.98/2 + 0.70/2 + 0.00 - 0.00
+      #       ~= 0.84 m
+      #   空间充足时的理想偏移（M_soft_actual = soft_margin = 0.60）：
+      #     L_shift_desired ~= 0.84 + 0.60 = 1.44 m
+      #   因此实际 L_shift 通常位于 [0.84, 1.44] m，取决于可行驶边界能否容纳软余量。
+      #
+      # 第 3 步：横向空间示例
+      #   假设绕行侧“路径中心到 drivable bound”的距离 D_bound = 1.60 m：
+      #     使用 soft_drivable_bound_margin = 0.30：
+      #       L_bound_soft ~= 1.60 - 0.98/2 - 0.30 = 0.81 m
+      #       0.81 < L_shift_min(0.84) => 连软边界条件下最低偏移都不可行。
+      #     放宽到 hard_drivable_bound_margin = 0.10：
+      #       L_bound_hard ~= 1.60 - 0.98/2 - 0.10 = 1.01 m
+      #       0.84 <= 1.01 < 1.44
+      #       => 最低硬安全偏移可行，但 0.60 m 的全部 soft margin 无法保留；
+      #          可使用的软余量上限约为 1.01 - 0.84 = 0.17 m。
+      #   同时还需满足：
+      #     L_shift <= max_left/right_shift_length
+      #     L_shift <= max_deviation_from_lane
+      #   本文件 max_deviation_from_lane = 1.00 m，因此它会把实际偏移上限进一步限制为 1.00 m。
+      #
+      # 第 4 步：1 m/s 下的准备距离
+      #   D_prepare_nom = max(1.00 * max_prepare_time(1.00), 0.80) = 1.00 m
+      #   D_prepare_min = max(1.00 * min_prepare_time(0.50), 0.80) = 0.80 m
+      #   D_front = longitudinal_margin(0.00) + front_overhang(0.24) = 0.24 m
+      #
+      # 第 5 步：标称平滑绕障的纵向最低距离
+      #   1 m/s 低于 constraints.lateral.velocity[0] = 1.39 m/s，
+      #   因此示例使用第一档 min_jerk_values.avoid = 0.20 m/s^3。
+      #   对最低偏移 L_shift_min = 0.84 m：
+      #     D_shift_nom
+      #       = 4 * 1.00 * cbrt(0.5 * 0.84 / 0.20)
+      #       ~= 5.12 m
+      #     D_required_nom ~= 1.00 + 5.12 + 0.24 = 6.36 m
+      #   对理想偏移 L_shift_desired = 1.44 m：
+      #     D_shift_nom ~= 6.13 m
+      #     D_required_nom ~= 1.00 + 6.13 + 0.24 = 7.37 m
+      #
+      # 第 6 步：受横向加速度约束的“近距放宽”极限近似
+      #   当前 a_lat_max = 0.50 m/s^2，虽然 max_jerk_values = 3.00，
+      #   实际可用 jerk 还受 j_max_by_accel 限制：
+      #     对 L_shift=0.84：
+      #       j_max_by_accel ~= sqrt(2*0.50^3/0.84) ~= 0.546 m/s^3
+      #       j_max_usable ~= min(3.00, 0.546) = 0.546
+      #       D_required_sharp ~= 0.80 + 3.67 + 0.24 = 4.71 m
+      #     对 L_shift=1.44：
+      #       j_max_by_accel ~= sqrt(2*0.50^3/1.44) ~= 0.417 m/s^3
+      #       D_required_sharp ~= 0.80 + 4.80 + 0.24 = 5.84 m
+      #
+      # 第 7 步：把 base_link 距离换算为车头距离
+      #   D_front_bumper = D_base_link - 1.06
+      #   因而上述“新建绕障”的近似最低车头距离为：
+      #     最低硬偏移、近距放宽：4.71 - 1.06 ~= 3.65 m
+      #     理想偏移、近距放宽：  5.84 - 1.06 ~= 4.78 m
+      #     最低硬偏移、标称平滑：6.36 - 1.06 ~= 5.30 m
+      #   结论：1 m/s 时，“车头 2 m”更适合作为停止/禁止新建急绕的近场边界，
+      #   而不是保证能够从零开始成功生成平滑绕障的距离。
+      #
+      # 第 8 步：1 m/s 停车距离工程示例
+      #   假设 T_delay=0.35 s、可稳定减速度 abs(a_dec)=1.00 m/s^2、
+      #   工程裕量 D_margin=0.50 m：
+      #     D_stop ~= 1.00*0.35 + 1.00^2/(2*1.00) + 0.50
+      #            ~= 1.35 m
+      #   因而车头前 2.00 m 的静态障碍物，在上述制动能力确实成立时可用于停车；
+      #   但 obstacle_stop 的 stop_margin、实际控制延迟和地面附着仍必须单独实测。
+      #
+      # 第 9 步：debug 状态与本例的对应关系
+      #   S_available >= 6.36~7.37 m：
+      #     更可能生成标称平滑 SAME_DIRECTION_SHIFT。
+      #   4.71~5.84 m <= S_available < 6.36~7.37 m：
+      #     可能使用压缩 soft margin / 增大 jerk / 降速，出现 CLOSE_DISTANCE_AVOIDANCE。
+      #   S_available < 约 4.71 m（以最低偏移计算）：
+      #     更可能为 INSUFFICIENT_LONGITUDINAL_DISTANCE，应由停车模块兜底。
+      #   若 L_shift 或新旧 shift 差值过小：
+      #     可能出现 LESS_EXECUTION_SHIFT 或被 trim/quantize 合并。
+      # ========================================================================
       # ========================================================================
       # 1. 路径重采样参数
       # ========================================================================
@@ -28,11 +230,13 @@
       #   值越小 → 路径点越密 → 规划精度越高，路径更平滑，但计算量增大
       #   值越大 → 路径点越稀 → 计算更快，但可能遗漏细节导致路径不够精确
       #   典型范围: 0.1 ~ 1.0
+      # official default (autoware_launch/main): resample_interval_for_planning: 0.3
       resample_interval_for_planning: 0.3
       # 输出路径时重采样的间距 [m]，用于平滑最终轨迹
       #   值越小 → 输出轨迹点更密集，控制精度更高
       #   值越大 → 输出轨迹更稀疏，减小后续模块的计算负担
       #   通常设得比 planning 间距大一些，以平滑小幅度抖动
+      # official default (autoware_launch/main): resample_interval_for_output: 4.0
       resample_interval_for_output: 0.5
 
       # ========================================================================
@@ -44,19 +248,22 @@
       #   "opposite_direction_lane": 可借用对向车道（更灵活，但需确保对向无来车）
       #   选择 same_direction_lane → 避障空间受限，可能无法绕过宽大障碍物
       #   选择 opposite_direction_lane → 避障空间更大，但安全风险增加
-      # official default: use_lane_type: "opposite_direction_lane"
-      use_lane_type: "same_direction_lane"
+      # official default (autoware_launch/main): use_lane_type: "opposite_direction_lane"
+      use_lane_type: "opposite_direction_lane"
       # 是否使用路口区域进行避让
       #   true  → 允许在路口内生成避障路径，增加绕行空间
       #   false → 路口内不进行避让，更安全但可能无法绕过路口附近的障碍物
+      # official default (autoware_launch/main): use_intersection_areas: true
       use_intersection_areas: true
       # 是否使用斜线区域（hatched road markings，通常禁止驶入的标线区域）
       #   true  → 允许压过斜线区域绕行，增加了可绕行空间
       #   false → 严格遵守标线，不驶入斜线区域，更遵守交规但可能无法避让
+      # official default (autoware_launch/main): use_hatched_road_markings: true
       use_hatched_road_markings: true
       # 是否使用自由空间（如无标线的开阔区域，如停车场、广场等）
       #   true  → 允许使用无标线区域绕行，大幅扩展可行驶范围
       #   false → 仅在标线车道内行驶，更保守
+      # official default (autoware_launch/main): use_freespace_areas: true
       use_freespace_areas: true
 
       # ========================================================================
@@ -65,6 +272,23 @@
       #   不同物体类型有不同的默认边距，反映对不同障碍物的谨慎程度。
       # ========================================================================
       target_object:
+        # ----------------------------------------------------------------------
+        # 所有目标类别共用的公式说明
+        # ----------------------------------------------------------------------
+        # 1) moving/stopped 过滤：
+        #      speed > th_moving_speed 持续超过 th_moving_time => moving，不由本模块绕行。
+        # 2) envelope：
+        #      原始 shape 经 envelope_buffer_margin 与 max_expand_ratio 处理后形成稳定包络。
+        #      具体为多边形运算；调参时可近似认为 W_env 随 buffer/expand 增大而增大。
+        # 3) 横向余量：
+        #      M_lat = M_hard_selected + M_soft_actual
+        #      0 <= M_soft_actual <= soft_margin
+        #      M_hard_selected = parked ? hard_margin_for_parked_vehicle : hard_margin
+        # 4) 横向偏移近似：
+        #      L_shift ~= max(0, W_ego/2 + W_env/2 + M_lat - abs(y_obj))
+        # 5) 纵向固定缓冲：
+        #      D_front = longitudinal_margin + optional(front_overhang)
+        #      D_rear  = longitudinal_margin + optional(rear_overhang)
         # ======================================================================
         # 小型车 (car)
         # ======================================================================
@@ -72,49 +296,55 @@
           # 判定为运动物体的最低速度 [m/s]，低于此值视为静止物体进入避障考虑
           #   值越大 → 更多慢速移动的车辆被当作静止障碍物处理，避让更频繁
           #   值越小 → 只有几乎完全停止的车辆才触发避让，减少不必要的绕行
-          # official default: th_moving_speed: 1.0
+          # official default (autoware_launch/main): th_moving_speed: 1.0
           th_moving_speed: 1.0
           # 静止物体被重新判定为运动所需的最小连续运动时间 [s]
           #   值越大 → 物体一旦被判为静止，需要更长时间持续运动才能重新归类为运动
           #           避免因短暂移动（如车辆微调位置）导致的避让策略反复切换
           #   值越小 → 物体状态切换更灵敏，但可能导致避让决策抖动
-          # official default: th_moving_time: 2.0
+          # official default (autoware_launch/main): th_moving_time: 2.0
           th_moving_time: 2.0
           # 物体纵向（前后方向）额外附加的安全距离 [m]
           #   值越大 → 在障碍物前后方预留更多安全空间，避障路径开始偏移更早、结束更晚
           #   值越小 → 更贴近障碍物前后端开始/结束绕行，路径更紧凑
+          # official default (autoware_launch/main): longitudinal_margin: 0.0
           longitudinal_margin: 0.0
           lateral_margin:
-            # 软边界：允许避障路径轻微侵入的横向距离 [m]
-            #   值越大 → 允许路径更靠近障碍物（更激进），绕行幅度更小
-            #   值越小 → 路径与障碍物保持更远距离（更保守），绕行幅度更大
-            #   注意：软边界与硬边界的逻辑相反——soft_margin 越大表示允许更多"侵入"，
-            #   因此更激进；增大 hard_margin 则是更保守。
-            # official default: soft_margin: 0.7
+            # 软余量上限 [m]：空间充足时希望额外保持的“可压缩”横向距离。
+            #   值越大 → 理想总横向间距更大、所需 shift 更大（更保守）；道路狭窄时可压缩。
+            #   值越小 → 理想额外间距更小、路径更紧凑；但最低仍必须满足 hard_margin。
+            #   公式：M_lat = M_hard + M_soft_actual，0 <= M_soft_actual <= soft_margin。
+            #   因此总横向余量范围为 [M_hard, M_hard + soft_margin]。
+            # official default (autoware_launch/main): soft_margin: 0.5
             soft_margin: 0.35
             # 硬边界：绝对不允许侵入的横向距离 [m]
             #   值越大 → 障碍物周围的安全禁区更大，路径必须离得更远（更保守）
             #   值越小 → 安全禁区更小，可以更贴近障碍物绕行（更激进）
             #   当 soft_margin 和 hard_margin 冲突时，hard_margin 优先级更高
-            # official default: hard_margin: 0.2
+            #   允许配置负值（官方 UNKNOWN 默认即为负值），但负 hard margin 会允许
+            #   envelope 边界发生几何重叠，实车使用前必须做 footprint 碰撞验证。
+            # official default (autoware_launch/main): hard_margin: 0.2
             hard_margin: 0.4
             # 停放车辆的特殊硬边界 [m]（专门针对停放车辆的更严格安全距离）
             #   值越大 → 对停放车辆保持更大距离（更保守），因为停放车辆可能突然开门
             #   值越小 → 更贴近停放车辆通过（更激进）
-            # official default: hard_margin_for_parked_vehicle: 0.7
+            # official default (autoware_launch/main): hard_margin_for_parked_vehicle: 0.2
             hard_margin_for_parked_vehicle: 0.2
           # 物体形状的最大膨胀系数（0.0 ~ 1.0，0.0 表示不膨胀）
           #   值越大 → 障碍物边界被膨胀更多，预留更多安全空间（更保守）
           #   值越小 → 使用原始检测边界，更紧凑
+          # official default (autoware_launch/main): max_expand_ratio: 0.0
           max_expand_ratio: 0.0
           # 包络缓冲区余量 [m]，用于补偿定位误差或物体形状检测误差
           #   值越大 → 障碍物外扩更大，安全裕度更高（更保守），但可能导致不必要的绕行
           #   值越小 → 更依赖原始检测精度，避障路径更紧凑
+          # official default (autoware_launch/main): envelope_buffer_margin: 0.1
           envelope_buffer_margin: 0.1
           # 椭圆近似时长轴半径的误差阈值 [m]
           #   当物体形状用椭圆近似时，长轴半径误差超过此值则可能触发重新计算
           #   值越大 → 容忍更大的形状近似误差，减少重新计算次数
           #   值越小 → 对形状变化更敏感，更频繁更新椭圆模型
+          # official default (autoware_launch/main): th_error_eclipse_long_radius: 0.6
           th_error_eclipse_long_radius : 0.6
 
         # ======================================================================
@@ -123,21 +353,28 @@
         #   各参数含义与 car 相同，此处仅标注与 car 不同的值的含义。
         # ======================================================================
         truck:
+          # official default (autoware_launch/main): th_moving_speed: 1.0
           th_moving_speed: 1.0
+          # official default (autoware_launch/main): th_moving_time: 2.0
           th_moving_time: 2.0
+          # official default (autoware_launch/main): longitudinal_margin: 0.0
           longitudinal_margin: 0.0
           lateral_margin:
-            # soft_margin 设为 0.5（比 car 的 0.35 大），允许避障路径更靠近卡车
-            # 原因：卡车体积大，若保持过大距离可能无法正常通行
-            # official default: soft_margin: 0.7
+            # soft_margin 设为 0.5（比当前 car 的 0.35 大），表示空间充足时希望
+            # 比 car 多保留 0.15 m 的可压缩软余量；道路狭窄时该软余量可被缩短。
+            # official default (autoware_launch/main): soft_margin: 0.5
             soft_margin: 0.5
             # hard_margin 设为 0.2（比 car 的 0.4 小），硬安全禁区更小
             # 原因：在狭窄道路上需要更紧凑的绕行空间
+            # official default (autoware_launch/main): hard_margin: 0.2
             hard_margin: 0.2
-            # official default: hard_margin_for_parked_vehicle: 0.7
+            # official default (autoware_launch/main): hard_margin_for_parked_vehicle: 0.2
             hard_margin_for_parked_vehicle: 0.2
+          # official default (autoware_launch/main): max_expand_ratio: 0.0
           max_expand_ratio: 0.0
+          # official default (autoware_launch/main): envelope_buffer_margin: 0.1
           envelope_buffer_margin: 0.1
+          # official default (autoware_launch/main): th_error_eclipse_long_radius: 0.6
           th_error_eclipse_long_radius : 0.6
 
         # ======================================================================
@@ -145,17 +382,24 @@
         #   与卡车类似，体积大且可能频繁停靠，参数设置与卡车相同。
         # ======================================================================
         bus:
+          # official default (autoware_launch/main): th_moving_speed: 1.0
           th_moving_speed: 1.0
+          # official default (autoware_launch/main): th_moving_time: 2.0
           th_moving_time: 2.0
+          # official default (autoware_launch/main): longitudinal_margin: 0.0
           longitudinal_margin: 0.0
           lateral_margin:
-            # official default: soft_margin: 0.7
+            # official default (autoware_launch/main): soft_margin: 0.5
             soft_margin: 0.5
+            # official default (autoware_launch/main): hard_margin: 0.2
             hard_margin: 0.2
-            # official default: hard_margin_for_parked_vehicle: 0.7
+            # official default (autoware_launch/main): hard_margin_for_parked_vehicle: 0.2
             hard_margin_for_parked_vehicle: 0.2
+          # official default (autoware_launch/main): max_expand_ratio: 0.0
           max_expand_ratio: 0.0
+          # official default (autoware_launch/main): envelope_buffer_margin: 0.1
           envelope_buffer_margin: 0.1
+          # official default (autoware_launch/main): th_error_eclipse_long_radius: 0.6
           th_error_eclipse_long_radius : 0.6
 
         # ======================================================================
@@ -163,17 +407,24 @@
         #   拖挂车车身更长，转弯时尾部摆动大，参数设置与卡车相同。
         # ======================================================================
         trailer:
+          # official default (autoware_launch/main): th_moving_speed: 1.0
           th_moving_speed: 1.0
+          # official default (autoware_launch/main): th_moving_time: 2.0
           th_moving_time: 2.0
+          # official default (autoware_launch/main): longitudinal_margin: 0.0
           longitudinal_margin: 0.0
           lateral_margin:
-            # official default: soft_margin: 0.7
+            # official default (autoware_launch/main): soft_margin: 0.5
             soft_margin: 0.5
+            # official default (autoware_launch/main): hard_margin: 0.2
             hard_margin: 0.2
-            # official default: hard_margin_for_parked_vehicle: 0.7
+            # official default (autoware_launch/main): hard_margin_for_parked_vehicle: 0.2
             hard_margin_for_parked_vehicle: 0.2
+          # official default (autoware_launch/main): max_expand_ratio: 0.0
           max_expand_ratio: 0.0
+          # official default (autoware_launch/main): envelope_buffer_margin: 0.1
           envelope_buffer_margin: 0.1
+          # official default (autoware_launch/main): th_error_eclipse_long_radius: 0.6
           th_error_eclipse_long_radius : 0.6
 
         # ======================================================================
@@ -184,50 +435,66 @@
          # 判定为运动物体的最低速度 [m/s]，低于此值视为静止物体进入避障考虑
           #   值越大 → 更多慢速移动的车辆被当作静止障碍物处理，避让更频繁
           #   值越小 → 只有几乎完全停止的车辆才触发避让，减少不必要的绕行
-          # official default: th_moving_speed: 1.0
-          th_moving_speed: 2.0
+          # official default (autoware_launch/main): th_moving_speed: 0.28
+          th_moving_speed: 1.0
           # 静止物体被重新判定为运动所需的最小连续运动时间 [s]
           #   值越大 → 物体一旦被判为静止，需要更长时间持续运动才能重新归类为运动
           #           避免因短暂移动（如车辆微调位置）导致的避让策略反复切换
           #   值越小 → 物体状态切换更灵敏，但可能导致避让决策抖动
-          # official default: th_moving_time: 2.0
-          th_moving_time: 2.0
+          # official default (autoware_launch/main): th_moving_time: 1.0
+          th_moving_time: 1.0
           # 物体纵向（前后方向）额外附加的安全距离 [m]
           #   值越大 → 在障碍物前后方预留更多安全空间，避障路径开始偏移更早、结束更晚
           #   值越小 → 更贴近障碍物前后端开始/结束绕行，路径更紧凑
+          # official default (autoware_launch/main): longitudinal_margin: 0.0
           longitudinal_margin: 0.0
           lateral_margin:
-            # 软边界：允许避障路径轻微侵入的横向距离 [m]
-            #   值越大 → 允许路径更靠近障碍物（更激进），绕行幅度更小
-            #   值越小 → 路径与障碍物保持更远距离（更保守），绕行幅度更大
-            #   注意：软边界与硬边界的逻辑相反——soft_margin 越大表示允许更多"侵入"，
-            #   因此更激进；增大 hard_margin 则是更保守。
-            # official default: soft_margin: 0.7
-            soft_margin: 0.8
+            # 软余量上限 [m]：空间充足时希望额外保持的“可压缩”横向距离。
+            #   值越大 → 理想总横向间距更大、所需 shift 更大（更保守）；道路狭窄时可压缩。
+            #   值越小 → 理想额外间距更小、路径更紧凑；但最低仍必须满足 hard_margin。
+            #   公式：M_lat = M_hard + M_soft_actual，0 <= M_soft_actual <= soft_margin。
+            #   因此总横向余量范围为 [M_hard, M_hard + soft_margin]。
+            # official default (autoware_launch/main): soft_margin: 0.5
+            soft_margin: 0.3
             # 硬边界：绝对不允许侵入的横向距离 [m]
             #   值越大 → 障碍物周围的安全禁区更大，路径必须离得更远（更保守）
             #   值越小 → 安全禁区更小，可以更贴近障碍物绕行（更激进）
             #   当 soft_margin 和 hard_margin 冲突时，hard_margin 优先级更高
-            # official default: hard_margin: 0.2
+            #   允许配置负值（官方 UNKNOWN 默认即为负值），但负 hard margin 会允许
+            #   envelope 边界发生几何重叠，实车使用前必须做 footprint 碰撞验证。
+            # official default (autoware_launch/main): hard_margin: -0.2
             hard_margin: -0.2
             # 停放车辆的特殊硬边界 [m]（专门针对停放车辆的更严格安全距离）
             #   值越大 → 对停放车辆保持更大距离（更保守），因为停放车辆可能突然开门
             #   值越小 → 更贴近停放车辆通过（更激进）
-            # official default: hard_margin_for_parked_vehicle: 0.7
+            # official default (autoware_launch/main): hard_margin_for_parked_vehicle: -0.2
             hard_margin_for_parked_vehicle: 0.0
           # 物体形状的最大膨胀系数（0.0 ~ 1.0，0.0 表示不膨胀）
           #   值越大 → 障碍物边界被膨胀更多，预留更多安全空间（更保守）
           #   值越小 → 使用原始检测边界，更紧凑
-          max_expand_ratio: 0.2
+          # official default (autoware_launch/main): max_expand_ratio: 0.0
+          max_expand_ratio: 0.05
           # 包络缓冲区余量 [m]，用于补偿定位误差或物体形状检测误差
           #   值越大 → 障碍物外扩更大，安全裕度更高（更保守），但可能导致不必要的绕行
           #   值越小 → 更依赖原始检测精度，避障路径更紧凑
-          envelope_buffer_margin: 0.3
+          # official default (autoware_launch/main): envelope_buffer_margin: 0.1
+          envelope_buffer_margin: 0.05
+          # 当前 UNKNOWN 数值例（1 m/s 示例同上）：
+          #   hard_margin=0.0，soft_margin=0.6
+          #   => M_lat 范围 [0.0, 0.6] m。
+          #   若椅子原始宽 0.50 m、buffer=0.10 m、位于路径中心，
+          #   忽略 max_expand_ratio 附加膨胀时：
+          #     W_env ~= 0.70 m
+          #     L_shift_min ~= 0.84 m
+          #     L_shift_desired ~= 1.44 m
+          #   但本文件 max_deviation_from_lane=1.0 m，实际理想偏移 1.44 m 会被横向上限截断；
+          #   若 1.0 m 仍无法满足 footprint+hard margin，则不会成功绕行。
           # 椭圆近似时长轴半径的误差阈值 [m]
           #   当物体形状用椭圆近似时，长轴半径误差超过此值则可能触发重新计算
           #   值越大 → 容忍更大的形状近似误差，减少重新计算次数
           #   值越小 → 对形状变化更敏感，更频繁更新椭圆模型
-          th_error_eclipse_long_radius : 1.0
+          # official default (autoware_launch/main): th_error_eclipse_long_radius: 0.6
+          th_error_eclipse_long_radius : 0.8
 
         # ======================================================================
         # 自行车 (bicycle)
@@ -236,25 +503,32 @@
         bicycle:
           # th_moving_speed 设为 0.28（较低）
           #   原因：自行车速度慢，较高阈值会导致行驶中的自行车被误判为静止
+          # official default (autoware_launch/main): th_moving_speed: 0.28
           th_moving_speed: 0.28
           # th_moving_time 设为 1.0（较短）
           #   原因：自行车启动快，状态变化应快速响应
+          # official default (autoware_launch/main): th_moving_time: 1.0
           th_moving_time: 1.0
           # longitudinal_margin 设为 0.6（比 car 大）
           #   原因：自行车可能突然变向，需要更多纵向反应空间
           #   - 值越大 → 提前更多距离开始避让
           #   - 值越小 → 更靠近自行车才开始绕行
-          # official default: longitudinal_margin: 1.0
+          # official default (autoware_launch/main): longitudinal_margin: 0.6
           longitudinal_margin: 0.6
           lateral_margin:
+            # official default (autoware_launch/main): soft_margin: 0.7
             soft_margin: 0.7
+            # official default (autoware_launch/main): hard_margin: 0.5
             hard_margin: 0.5
-            # official default: hard_margin_for_parked_vehicle: 0.5
+            # official default (autoware_launch/main): hard_margin_for_parked_vehicle: 0.2
             hard_margin_for_parked_vehicle: 0.2
+          # official default (autoware_launch/main): max_expand_ratio: 0.0
           max_expand_ratio: 0.0
           # envelope_buffer_margin 设为 0.5（较大）
           #   原因：自行车体积小，检测框可能不稳定，需要更大缓冲
+          # official default (autoware_launch/main): envelope_buffer_margin: 0.5
           envelope_buffer_margin: 0.5
+          # official default (autoware_launch/main): th_error_eclipse_long_radius: 0.6
           th_error_eclipse_long_radius : 0.6
 
         # ======================================================================
@@ -262,21 +536,27 @@
         #   摩托车速度快、机动性强，与自行车类似需要适当安全距离。
         # ======================================================================
         motorcycle:
+          # official default (autoware_launch/main): th_moving_speed: 1.0
           th_moving_speed: 1.0
+          # official default (autoware_launch/main): th_moving_time: 1.0
           th_moving_time: 1.0
           # longitudinal_margin 设为 0.6
           #   原因：摩托车加速快，需要预留足够的纵向反应距离
-          # official default: longitudinal_margin: 1.0
+          # official default (autoware_launch/main): longitudinal_margin: 0.6
           longitudinal_margin: 0.6
           lateral_margin:
             # soft_margin 设为 0.5
-            # official default: soft_margin: 0.7
+            # official default (autoware_launch/main): soft_margin: 0.5
             soft_margin: 0.5
+            # official default (autoware_launch/main): hard_margin: 0.3
             hard_margin: 0.3
-            # official default: hard_margin_for_parked_vehicle: 0.3
+            # official default (autoware_launch/main): hard_margin_for_parked_vehicle: 0.2
             hard_margin_for_parked_vehicle: 0.2
+          # official default (autoware_launch/main): max_expand_ratio: 0.0
           max_expand_ratio: 0.0
+          # official default (autoware_launch/main): envelope_buffer_margin: 0.5
           envelope_buffer_margin: 0.5
+          # official default (autoware_launch/main): th_error_eclipse_long_radius: 0.6
           th_error_eclipse_long_radius : 0.6
 
         # ======================================================================
@@ -286,36 +566,44 @@
         pedestrian:
           # th_moving_speed 设为 0.28（很低）
           #   原因：行人移动速度慢，必须用低阈值来正确识别静止/运动状态
+          # official default (autoware_launch/main): th_moving_speed: 0.28
           th_moving_speed: 0.28
           # th_moving_time 设为 1.0（较短）
           #   原因：行人行为变化快，状态判定需快速响应
+          # official default (autoware_launch/main): th_moving_time: 1.0
           th_moving_time: 1.0
           # longitudinal_margin 设为 0.6（较大的纵向安全距离）
           #   原因：行人可能突然横穿，需要更多的纵向反应时间
-          # official default: longitudinal_margin: 1.0
+          # official default (autoware_launch/main): longitudinal_margin: 0.6
           longitudinal_margin: 0.6
           lateral_margin:
             # soft_margin 设为 0.7，hard_margin 设为 0.5（均较大）
             #   原因：行人是最脆弱的道路使用者，需最大横向安全距离
+            # official default (autoware_launch/main): soft_margin: 0.7
             soft_margin: 0.7
+            # official default (autoware_launch/main): hard_margin: 0.5
             hard_margin: 0.5
-            # official default: hard_margin_for_parked_vehicle: 0.5
+            # official default (autoware_launch/main): hard_margin_for_parked_vehicle: 0.2
             hard_margin_for_parked_vehicle: 0.2
+          # official default (autoware_launch/main): max_expand_ratio: 0.0
           max_expand_ratio: 0.0
           # 包络缓冲区余量 [m]，用于补偿定位误差或物体形状检测误差
           #   值越大 → 障碍物外扩更大，安全裕度更高（更保守），但可能导致不必要的绕行
           #   值越小 → 更依赖原始检测精度，避障路径更紧凑
+          # official default (autoware_launch/main): envelope_buffer_margin: 0.5
           envelope_buffer_margin: 0.5
 
+          # official default (autoware_launch/main): th_error_eclipse_long_radius: 0.6
           th_error_eclipse_long_radius : 0.6
 
-        # 多边形膨胀的最小/最大距离 [m]
-        #   障碍物距离在 [lower, upper] 范围内时使用多边形膨胀来简化形状
-        #   lower_distance 越大 → 远距离障碍物才使用多边形膨胀，近距离使用更精确的形状
-        #   upper_distance 越大 → 更远距离的障碍物也使用多边形膨胀
-        #   超出 upper 范围的障碍物不使用多边形膨胀（用更简单的模型替代）
-        #   注意：多边形膨胀会增加计算量
+        # 距离相关 envelope 膨胀区间 [m]
+        #   d_obj <= lower_distance：距离膨胀比例取 0，避免近距离目标被过度外扩。
+        #   lower_distance < d_obj < upper_distance：按距离逐步应用 max_expand_ratio。
+        #   d_obj >= upper_distance：达到配置允许的最大距离膨胀比例。
+        #   注意：这是 envelope_buffer_margin 的距离补偿逻辑，不是聚类/点云膨胀。
+        # official default (autoware_launch/main): lower_distance_for_polygon_expansion: 30.0
         lower_distance_for_polygon_expansion: 30.0
+        # official default (autoware_launch/main): upper_distance_for_polygon_expansion: 100.0
         upper_distance_for_polygon_expansion: 100.0
 
       # ========================================================================
@@ -329,25 +617,34 @@
         #   false → 完全忽略该类型物体，即使前方有该类型障碍物也不避让
         #   例如：如果关闭 pedestrian，则不会为行人执行避让
         target_type:
+          # official default (autoware_launch/main): car: true
           car: true
+          # official default (autoware_launch/main): truck: true
           truck: true
+          # official default (autoware_launch/main): bus: true
           bus: true
+          # official default (autoware_launch/main): trailer: true
           trailer: true
+          # official default (autoware_launch/main): unknown: true
           unknown: true
+          # official default (autoware_launch/main): bicycle: true
           bicycle: true
+          # official default (autoware_launch/main): motorcycle: true
           motorcycle: true
+          # official default (autoware_launch/main): pedestrian: true
           pedestrian: true
 
-        # 距离终点多远时开始检查目标 [m]
-        #   值越大 → 距离终点更远时就停止避让判断，避免在终点附近做无意义的绕行
-        #   值越小 → 即使靠近终点也会进行避让，确保全程安全
-        #   设为 0 表示一直到终点都进行障碍物检查
-        # official default: object_check_goal_distance: 20.0
-        object_check_goal_distance: 0.5
-        # 距离回程姿态多远时检查目标 [m]（用于掉头/折返场景）
-        #   值越大 → 在回程姿态前方更远距离就开始考虑避障
-        #   值越小 → 仅在接近回程姿态时才检查
-        # official default: object_check_return_pose_distance: 20.0
+        # 目标与终点之间的距离阈值 [m]
+        #   当目标距离 goal 小于该值时，模块限制/跳过会妨碍在终点前回正的目标处理，
+        #   避免生成无法在 goal 前完成返回中心线的 shift。
+        #   增大 → 更早在终点附近抑制新避障；减小 → 更靠近终点仍允许处理。
+        # official default (autoware_launch/main): object_check_goal_distance: 20.0
+        object_check_goal_distance: 1.0
+        # 目标与 return pose 的距离阈值 [m]
+        #   当目标过于接近 return pose 时，模块避免在该位置附近强制回正，
+        #   以防返回 shift 与仍存在的障碍物冲突。
+        #   增大 → 更大的 return-pose 邻域内保持偏移；减小 → 更早允许回正。
+        # official default (autoware_launch/main): object_check_return_pose_distance: 20.0
         object_check_return_pose_distance: 3.0
 
         # 物体跟踪丢失后的最大补偿时间 [s]
@@ -355,34 +652,72 @@
         #   值越大 → 对跟踪丢失更宽容，减少因短暂丢失导致的避让策略反复
         #           但可能对已消失的物体继续避让
         #   值越小 → 跟踪一旦丢失立即停止避让，响应更快但可能不稳定
+        # official default (autoware_launch/main): max_compensation_time: 2.0
         max_compensation_time: 2.0
 
+        # ----------------------------------------------------------------------
+        # 检测区域公式
+        # ----------------------------------------------------------------------
+        # 横向宽度（官方概念）：
+        #   M_detect_max = max_over_all_classes(soft_margin + hard_margin_for_parked_vehicle)
+        #   W_detect ~= W_ego + M_detect_max
+        #
+        # 前向长度：
+        #   static = true:
+        #     D_detect = max_forward_distance
+        #   static = false:
+        #     L_max = max(abs(max_left_shift_length), abs(max_right_shift_length))
+        #     D_dynamic = 4 * v_calc * cbrt(0.5 * L_max / j_min)
+        #     D_detect = clamp(1.5 * D_dynamic + D_prepare_nom,
+        #                      min_forward_distance,
+        #                      max_forward_distance)
+        #
+        # 1 m/s 当前数值例（static=false，按上述简化公式）：
+        #   L_max = max(|max_left_shift_length|, |max_right_shift_length|)
+        #         = max(4.0, 2.0) = 4.0 m
+        #   j_min = 0.2 m/s^3
+        #   D_dynamic = 4*1.0*cbrt(0.5*4.0/0.2) ~= 8.62 m
+        #   D_prepare_nom = max(1.0*1.0, 0.8) = 1.0 m
+        #   未 clamp 前：1.5*8.62 + 1.0 ~= 13.93 m
+        #   当前 clamp 范围 [50.0, 150.0]，因此 D_detect ~= 50.0 m。
+        #   这表示当前 min_forward_distance=50 m 只是在动态检测范围上设置很大的下限，
+        #   并不代表车辆必须等目标进入 50 m 才执行，也不等于“2 m 外才绕”。
+        #
+        # 注意：min_forward_distance 是动态检测长度的下限，并非严格的
+        # “障碍物进入该距离后一定不绕”的行为切换开关。
         # 检测区域参数
         #   定义自车周围多大范围内的障碍物会被纳入避障考虑。
         detection_area:
-          # 是否对静态物体进行检测
-          #   true  → 检测并避让静态物体（本模块的核心功能）
-          #   false → 不检测静态物体，仅依赖动态物体避让（此时本模块几乎无作用）
-          # official default: static: false
+          # 检测区域纵向长度是否使用固定值（注意：不是“是否检测静态物体”的开关）
+          #   true  → 前向检测长度固定为 max_forward_distance。
+          #   false → 前向检测长度按车速、最大 shift、最小横向 jerk 动态计算并 clamp。
+          # official default (autoware_launch/main): static: false
           static: true
-          # 前向检测的最小距离 [m]（在此距离内的障碍物不做避让处理）
-          #   值越大 → 近距离障碍物不触发避让（可能因为太近已无法安全绕行，应直接停车）
-          #   值越小 → 更近距离的障碍物也会尝试绕行
-          #   作用：防止对已经太近的障碍物做出不安全的绕行尝试
-          # official default: min_forward_distance: 50.0
-          min_forward_distance: 20.0
+          # 动态检测区域的前向距离下限 [m]；不是可靠的“近距离不绕障”硬切换阈值。
+          #   detection_area.static=false 时作为 clamp 下限；static=true 时固定前向长度主要由 max_forward_distance 决定。
+          #   近距离行为还受 avoidance_for_close_vehicle.policy、纵向可行性和 stop/yield 逻辑共同影响。
+          #   不要仅靠此值实现“2 m 内停、2 m 外绕”；应同时配置 close policy 与停车模块。
+          # official default (autoware_launch/main): min_forward_distance: 50.0
+          min_forward_distance: 50.0
           # 前向检测的最大距离 [m]（超出此距离的障碍物不触发避让）
           #   值越大 → 更早发现前方障碍物，更早开始规划避让路径（更平稳）
           #           但检测和规划的计算量增大
           #   值越小 → 仅考虑较近的障碍物，计算更快但可能在高速下来不及平滑避让
-          # official default: max_forward_distance: 150.0
-          max_forward_distance: 30.0
+          # official default (autoware_launch/main): max_forward_distance: 150.0
+          max_forward_distance: 150.0
           # 后向检测距离 [m]（考虑后方障碍物，主要用于安全校验）
           #   值越大 → 检测更远的后方来车，更安全（尤其是在借用对向车道后返回时）
           #   值越小 → 仅考虑近距离后方物体
-          # official default: backward_distance: 10.0
-          backward_distance: 3.0
+          # official default (autoware_launch/main): backward_distance: 10.0
+          backward_distance: 0.0
 
+        # ----------------------------------------------------------------------
+        # 停放车辆判定近似公式（官方文档）
+        # ----------------------------------------------------------------------
+        #   L_d = (W_lane - W_obj) / 2       # 可横移空间
+        #   ratio = L_a / max(L_d, epsilon)  # 实际所需 shift / 可横移空间
+        #   ratio > th_shiftable_ratio 时，更倾向判定为 parked vehicle。
+        #   该判定还会结合中心线偏移、路肩宽度、道路边界等条件。
         # 停放车辆判定参数
         #   用于区分"行驶中临时停车"和"真正停放"的车辆。
         parked_vehicle:
@@ -390,30 +725,34 @@
           #   值越大 → 只有偏离车道中心线很远的车辆才被判为停放（更宽松）
           #   值越小 → 略微偏离车道中心线的车辆就可能被判为停放（更严格）
           #   设为 0 表示不基于中心线偏移量来做停放判定
-          # official default: th_offset_from_centerline: 1.0
+          # official default (autoware_launch/main): th_offset_from_centerline: 1.0
           th_offset_from_centerline: 0.0
-          # 可绕行空间的比例阈值 [0~1]，低于该值认为无法安全避让
-          #   值越大 → 需要更多可绕行空间才进行避让（更保守），否则直接停车等待
-          #   值越小 → 即使可绕行空间很小也尝试避让（更激进），但可能通过很窄的空间
-          #   例如：设为 0.8 表示需要 80% 的车道宽度可用来绕行才执行避让
-          # official default: th_shiftable_ratio: 0.8
-          th_shiftable_ratio: 0.4
+          # 停放车辆判定用的 shift 比例阈值 [0~1]
+          #   L_d=(W_lane-W_obj)/2，ratio=L_a/L_d；ratio 大于该阈值时，
+          #   目标更偏向道路边缘、实际所需 shift 占可用空间比例更高，模块更倾向判为 parked。
+          #   增大 → 更难判为 parked；减小 → 更多边缘停止车辆被判为 parked。
+          #   该参数不是“可绕行空间不足就停车”的直接阈值。
+          # official default (autoware_launch/main): th_shiftable_ratio: 0.8
+          th_shiftable_ratio: 0.1
           # 最小路肩宽度 [m]，路肩宽于此值才认为有额外绕行空间
           #   值越大 → 需要更宽的路肩才认为可以利用，减少可绕行场景
           #   值越小 → 较窄的路肩也认为可利用，增加绕行机会
+          # official default (autoware_launch/main): min_road_shoulder_width: 0.5
           min_road_shoulder_width: 0.2
 
-        # 汇入车辆的超出距离 [m]
-        #   用于判定汇入车辆（如从匝道汇入）是否对本车道构成障碍
-        #   值越大 → 更远的汇入车辆也会被考虑
+        # 汇入/偏离车辆 polygon 相对本车道中心线的 overhang 阈值 [m]
+        #   若目标 overhang 超过该阈值，模块可将其视为正在汇入/偏离而不作为普通
+        #   静态绕障目标；实际行为还取决于 ambiguous-vehicle policy。
+        #   该值描述横向重叠关系，不是前向搜索距离。
         merging_vehicle:
+          # official default (autoware_launch/main): th_overhang_distance: 0.0
           th_overhang_distance: 0.0
 
         # 分类不稳定时间 [s]
         #   当感知模块对障碍物类型分类频繁变化时，在此时间内忽略该物体
         #   值越大 → 更长时间忽略分类不稳定的物体（减少误判，但可能漏掉真实障碍物）
         #   值越小 → 更快接受最新的分类结果（响应更快，但可能因分类错误而做出不当避让）
-        # official default: unstable_classification_time: 2.0
+        # official default (autoware_launch/main): unstable_classification_time: 2.0
         unstable_classification_time: 2.0
 
         # 针对模糊/不确定车辆的避障策略
@@ -424,50 +763,59 @@
           # policy: "auto"   → 自动判断并执行避让
           #   "auto" 更激进，会在不确定情况下也执行避让
           #   "manual" 更保守，不确定时交由人工决策
-          # official default: policy: "manual"
+          # official default (autoware_launch/main): policy: "manual"
           policy: "auto"
           condition:
             # 停止超过此时间才考虑避让 [s]
             #   值越大 → 需要物体更长时间保持静止才确认为障碍物（更保守）
             #   值越小 → 短暂停止即触发避让判断（更灵敏，但可能误触发）
-            th_stopped_time: 1.0          # 停止超过该时间才考虑避让,默认3 [s]
+            # official default (autoware_launch/main): th_stopped_time: 3.0
+            th_stopped_time: 1.0
             # 移动超过此距离才重新判定为运动状态 [m]
             #   值越大 → 物体需要移动更大距离才能从"避让目标"中移除
             #           防止因微小移动导致避让策略取消
             #   值越小 → 物体稍有移动即取消避让
+            # official default (autoware_launch/main): th_moving_distance: 1.0
             th_moving_distance: 1.0       # 移动超过该距离才重新判定 [m]
           ignore_area:
             traffic_light:
               # 信号灯前忽略区域的范围 [m]
               #   值越大 → 信号灯前更大范围内不执行避让（因为车辆可能在等红灯，无需绕行）
               #   值越小 → 仅在信号灯很近时才忽略
+              # official default (autoware_launch/main): front_distance: 20.0
               front_distance: 20.0        # 信号灯前忽略区域的范围 [m]
             crosswalk:
               # 人行横道前忽略避让的范围 [m]
               #   值越大 → 人行横道前更大范围内不避让（避免在斑马线附近绕行）
+              # official default (autoware_launch/main): front_distance: 20.0
               front_distance: 20.0        # 人行横道前忽略范围 [m]
               # 人行横道后忽略避让的范围 [m]
+              # official default (autoware_launch/main): behind_distance: 0.0
               behind_distance: 0.0        # 人行横道后忽略范围 [m]
           wait_and_see:
             # 等待观察的目标行为类型
             #   "MERGING"   : 正在汇入的车辆（可能很快离开本车道）
             #   "DEVIATING" : 正在偏离车道的车辆（可能只是临时偏航）
             #   对这些行为采取"等待观察"策略，而非立即避让
+            # official default (autoware_launch/main): target_behaviors: ["MERGING", "DEVIATING"]
             target_behaviors: ["MERGING", "DEVIATING"]  # 等待观察的目标行为
             # 最近距离阈值 [m]，若物体距离小于此值则不再等待，立即执行避让
             #   值越大 → 更远距离就结束等待，开始执行避让（更安全）
             #   值越小 → 即使距离较近也继续观察等待（更耐心，但可能风险更大）
+            # official default (autoware_launch/main): th_closest_distance: 10.0
             th_closest_distance: 10.0     # 最近距离阈值 [m]
 
         # 针对违章停车车辆的避让策略
         #   policy: "ignore" → 不主动避让违章停车车辆（依赖其他模块或人工处理）
         #   policy: "auto"   → 自动生成避让路径
         avoidance_for_parking_violation_vehicle:
+          # official default (autoware_launch/main): policy: "ignore"
           policy: "auto"
           condition:
             # 距道路边界的距离阈值 [m]
             #   距道路边界小于此距离的停车可能被判定为违章停车
             #   值越大 → 更多停车被归类为违章停车
+            # official default (autoware_launch/main): th_road_border_distance: 0.8
             th_road_border_distance: 0.8  # 距道路边界的距离阈值 [m]
 
         # 针对邻车道停止车辆的避让策略
@@ -475,18 +823,21 @@
         #   policy: "auto"   → 自动避让邻车道停止车辆（更安全）
         #   policy: "ignore" → 忽略邻车道停止车辆（更高效，但注意潜在风险）
         avoidance_for_adjacent_lane_stop_vehicle:
+          # official default (autoware_launch/main): policy: "auto"
           policy: "auto"
 
         # 针对近距离车辆的避让策略
         #   policy: "ignore" → 忽略已非常接近的车辆（因为距离太近，避让空间不足）
         #   policy: "auto"   → 仍尝试避让（可能导致不安全的急转）
         avoidance_for_close_vehicle:
-          policy: "auto"
+          # official default (autoware_launch/main): policy: "ignore"
+          policy: "ignore"
 
         # 路口处的偏航角偏差阈值 [rad]（约 20°）
         #   在路口内，自车偏航角与此值的偏差用于判断是否处于转弯状态
         #   值越大 → 更多姿态被视为"直行"而非转向
         intersection:
+          # official default (autoware_launch/main): yaw_deviation: 0.349
           yaw_deviation: 0.349
 
         # 自由空间中判定静态物体的停止时间 [s]
@@ -495,6 +846,7 @@
         #   值越小 → 更快将停止物体识别为障碍物
         freespace:
           condition:
+            # official default (autoware_launch/main): th_stopped_time: 5.0
             th_stopped_time: 2.0
 
       # ========================================================================
@@ -502,119 +854,159 @@
       #   验证生成的避让轨迹是否与周围道路使用者（尤其是后方来车和侧方车辆）
       #   发生潜在冲突。若校验不通过，则放弃避让或选择更安全的策略。
       # ========================================================================
+      # ------------------------------------------------------------------------
+      # 安全校验公式说明（RSS/预测碰撞的工程化近似）
+      # ------------------------------------------------------------------------
+      # 安全校验使用自车候选路径和目标预测路径做时域碰撞检查，并结合 RSS 参数。
+      # 简化的纵向安全距离可理解为：
+      #   D_safe ~= v_rear * rear_vehicle_reaction_time
+      #            + v_rear^2 / (2*abs(expected_rear_deceleration))
+      #            - v_front^2 / (2*abs(expected_front_deceleration))
+      #            + v_rear * rear_vehicle_safety_time_margin
+      # 实际代码还使用 polygon、预测时域、航向差、横向/纵向阈值等条件，
+      # 不能只用上式替代源码判定。
       safety_check:
         # 参与安全校验的物体类型
         #   true  → 对该类型物体进行安全校验
         #   false → 安全校验时忽略该类型（可能导致碰撞风险）
         target_type:
+          # official default (autoware_launch/main): car: true
           car: true
+          # official default (autoware_launch/main): truck: true
           truck: true
+          # official default (autoware_launch/main): bus: true
           bus: true
+          # official default (autoware_launch/main): trailer: true
           trailer: true
-          # official default: unknown: false
+          # official default (autoware_launch/main): unknown: false
           unknown: true
+          # official default (autoware_launch/main): bicycle: true
           bicycle: true
+          # official default (autoware_launch/main): motorcycle: true
           motorcycle: true
+          # official default (autoware_launch/main): pedestrian: true
           pedestrian: true
 
         # 是否启用安全校验（此处禁用）
         #   true  → 启用安全校验，不安全的避让路径会被否决（更安全但可能无法避让）
         #   false → 跳过安全校验，总是执行避让（更激进，风险更高）
         #   注意：禁用安全校验意味着不会检查后方来车、侧方车辆等风险！
-        # official default: enable: true
+        # official default (autoware_launch/main): enable: true
         enable: false
         # 是否检查当前车道（自车所在车道是否有其他车辆）
         #   true → 检查当前车道，若有冲突则阻止避让
+        # official default (autoware_launch/main): check_current_lane: false
         check_current_lane: false
         # 是否检查目标偏移侧的车道（绕行方向侧的车道）
         #   true → 检查绕行方向是否有来车，防止绕行时与侧方车辆碰撞
+        # official default (autoware_launch/main): check_shift_side_lane: true
         check_shift_side_lane: true
         # 是否检查另一侧车道（非绕行方向侧）
         #   true  → 双向检查，更全面但更保守，可能阻止更多避让
         #   false → 仅检查绕行侧，更宽松
-        # official default: check_other_side_lane: false
+        # official default (autoware_launch/main): check_other_side_lane: false
         check_other_side_lane: true
         # 是否检查无法避开的物体
         #   true → 若存在完全无法避让的物体，安全校验失败
+        # official default (autoware_launch/main): check_unavoidable_object: false
         check_unavoidable_object: true
         # 是否检查其他物体（不在当前/相邻车道但可能相关的物体）
         #   true → 更全面的安全校验
+        # official default (autoware_launch/main): check_other_object: true
         check_other_object: true
         # 是否检查所有预测路径（考虑其他车辆的未来轨迹）
         #   true  → 基于预测轨迹进行更全面的碰撞检测（更安全但计算量大）
         #   false → 仅基于当前状态检测
+        # official default (autoware_launch/main): check_all_predicted_path: false
         check_all_predicted_path: false
         # 向后检查的安全距离 [m]，检查后方多远距离内的车辆
         #   值越大 → 检测更远的后方来车（更安全，尤其高速场景）
         #   值越小 → 仅关心近距离后方车辆（计算更快）
-        # official default: safety_check_backward_distance: 100.0
-        safety_check_backward_distance: 10.0
+        # official default (autoware_launch/main): safety_check_backward_distance: 100.0
+        safety_check_backward_distance: 1.0
         # 安全边界膨胀的迟滞因子
         #   当安全状态变化时，用于平滑安全边界的膨胀速度
         #   值越大 → 安全边界膨胀更快（更保守的响应，更早预警）
         #   值越小 → 安全边界膨胀更慢（更平稳但响应稍慢）
+        # official default (autoware_launch/main): hysteresis_factor_expand_rate: 1.5
         hysteresis_factor_expand_rate: 1.5
         # 安全计数所需的迟滞帧数
         #   需要连续多少帧确认安全后才认为真正安全
         #   值越大 → 需要更长时间确认安全，减少误报但响应变慢
         #   值越小 → 更快确认安全，但可能因噪声导致误判
+        # official default (autoware_launch/main): hysteresis_factor_safe_count: 3
         hysteresis_factor_safe_count: 3
-        # 碰撞检查时的航向角差阈值 [rad]（约 180°）
-        #   当自车与目标物体的航向角差超过此值，认为可能发生碰撞
-        #   值越大 → 更宽松的碰撞判定（减少误报）
-        #   值越小 → 更严格的碰撞判定（更安全）
+        # 碰撞检查允许的最大航向角差 [rad]
+        #   航向差超过阈值的组合通常不会按同向/可比较运动模型继续做相同碰撞判定。
+        #   增大 → 更多不同朝向目标参与检查；减小 → 更早按航向差过滤。
+        #   具体符号与过滤分支以本机 path_safety_checker 源码为准。
+        # official default (autoware_launch/main): collision_check_yaw_diff_threshold: 3.1416
         collision_check_yaw_diff_threshold: 3.1416
-        # 安全校验中考虑的最低自车速度 [m/s]，低于此速度不进行安全校验
-        #   值越大 → 低速时不检查（低速下碰撞风险低），减少不必要的校验
-        #   值越小 → 更低速度也会进行安全校验
-        # official default: min_velocity: 1.38
+        # 构造自车预测路径时使用的最低速度 [m/s]
+        #   当实车速度过低时，用该下限避免预测时间/距离退化；并不等于低于此值关闭安全校验。
+        #   增大 → 静止/低速时预测路径推进得更远；减小 → 预测更贴近实际低速。
+        # official default (autoware_launch/main): min_velocity: 1.38
         min_velocity: 0.3
         # 安全校验中考虑的最高自车速度 [m/s]
+        # official default (autoware_launch/main): max_velocity: 50.0
         max_velocity: 50.0
         # 时间分辨率 [s]，碰撞预测的时间步长
         #   值越小 → 碰撞预测更精细（更准确但计算量增大）
         #   值越大 → 计算更快但可能漏掉短时间内的碰撞
+        # official default (autoware_launch/main): time_resolution: 0.5
         time_resolution: 0.5
         # 前方物体的时间窗口 [s]，预测前方物体在此时间内的运动
         #   值越大 → 预测更远的未来（更保守，但不确定性高）
         #   值越小 → 仅预测近期（更可靠但可能忽略远期风险）
+        # official default (autoware_launch/main): time_horizon_for_front_object: 3.0
         time_horizon_for_front_object: 3.0
         # 后方物体的时间窗口 [s]，预测后方物体在此时间内的运动
         #   值越大 → 更早发现后方追尾风险（更安全，高速时建议增大）
         #   值越小 → 仅考虑近期后方风险
+        # official default (autoware_launch/main): time_horizon_for_rear_object: 10.0
         time_horizon_for_rear_object: 10.0
         # 起步前的延迟时间 [s]，停车后重新起步前的等待时间
         #   值越大 → 停车后等待更久才重新起步（更安全，确认周围情况）
         #   值越小 → 停车后更快重新起步
+        # official default (autoware_launch/main): delay_until_departure: 0.0
         delay_until_departure: 0.0
         # 扩展多边形的策略
         #   "along_path" → 沿路径方向扩展障碍物多边形（考虑自车未来轨迹）
+        # official default (autoware_launch/main): extended_polygon_policy: "along_path"
         extended_polygon_policy: "along_path"
         # 前方车辆预期的减速度 [m/s²]
         #   值越负（绝对值越大）→ 假设前车刹车更猛，碰撞预测更保守（更安全）
         #   值越接近 0 → 假设前车缓慢减速，预测更乐观
+        # official default (autoware_launch/main): expected_front_deceleration: -1.0
         expected_front_deceleration: -1.0
         # 后方车辆预期的减速度 [m/s²]
         #   值越负（绝对值越大）→ 假设后车刹车更猛，追尾风险降低（更乐观）
         #   值越接近 0 → 假设后车不减速，追尾风险预估更高（更保守）
+        # official default (autoware_launch/main): expected_rear_deceleration: -1.0
         expected_rear_deceleration: -1.0
         # 后方车辆反应时间 [s]，后车从感知到开始刹车的时间
         #   值越大 → 假设后车反应更慢，追尾风险预估更高（更保守，会更多阻止避让）
         #   值越小 → 假设后车反应更快，追尾风险更低（更乐观）
+        # official default (autoware_launch/main): rear_vehicle_reaction_time: 2.0
         rear_vehicle_reaction_time: 2.0
         # 后方车辆安全时间裕度 [s]，额外的安全缓冲时间
         #   值越大 → 需要更大的时间裕度确认安全（更保守）
         #   值越小 → 更紧凑的时间裕度（更激进）
+        # official default (autoware_launch/main): rear_vehicle_safety_time_margin: 1.0
         rear_vehicle_safety_time_margin: 1.0
         # 横向距离的最大阈值 [m]，超出此横向距离的物体不参与安全校验
         #   值越大 → 更远的侧方物体也参与校验（更全面）
         #   值越小 → 仅关心近距离侧方物体
+        # official default (autoware_launch/main): lateral_distance_max_threshold: 2.0
         lateral_distance_max_threshold: 2.0
         # 纵向距离的最小阈值 [m]，小于此纵向距离的物体必须参与校验
         #   值越大 → 更远的前后物体也强制参与校验（更保守）
         #   值越小 → 仅强制校验非常近的物体
+        # official default (autoware_launch/main): longitudinal_distance_min_threshold: 3.0
         longitudinal_distance_min_threshold: 3.0
-        # 纵向速度差的时间增量 [s]，用于计算速度差
+        # 用速度差修正每个预测时刻实际纵向间距的时间乘数 [s]
+        #   gap_corrected ~= gap_geometric + delta_v * longitudinal_velocity_delta_time。
+        # official default (autoware_launch/main): longitudinal_velocity_delta_time: 0.0
         longitudinal_velocity_delta_time: 0.0
 
       # ========================================================================
@@ -623,100 +1015,185 @@
       # ========================================================================
       avoidance:
         # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 横向 shift 生成/验证公式
+        # ----------------------------------------------------------------------
+        # 实际总横向余量：
+        #   M_lat = selected_hard_margin + M_soft_actual
+        #   0 <= M_soft_actual <= soft_margin
+        #
+        # 所需 shift（矩形近似）：
+        #   L_shift ~= max(0, W_ego/2 + W_env/2 + M_lat - abs(y_obj))
+        #
+        # 可用 shift：
+        #   L_bound ~= D_center_to_bound - W_ego/2 - M_bound
+        #   M_bound 可从 soft_drivable_bound_margin 放宽到 hard_drivable_bound_margin
+        #   L_limit = min(L_bound, max_left/right_shift_length, max_deviation_from_lane)
+        #   成功条件：L_shift <= L_limit
+        #
+        # 状态/过滤阈值：
+        #   |current_shift| > th_avoid_execution => 认为避障动作已开始
+        #   |delta_shift| < th_small_shift_length => 小 shift 可能与相邻 shift 合并
+        #   quantize_size 会进一步量化 shift，抑制细小变化。
+        #
+        # 1 m/s UNKNOWN 椅子例：
+        #   由顶部 [L] 得 L_shift_min ~= 0.84 m、L_shift_desired ~= 1.44 m。
+        #   当前 th_avoid_execution=0.12 m 仅用于“已开始 shifting”的状态判断，
+        #   不能把 0.12 m 当成绕开椅子的安全偏移量。
+        #   当前 th_small_shift_length=0.05 m：
+        #     若相邻规划帧只改变 0.03 m，可能被视为小变化而合并；
+        #     若目标几何抖动造成 0.10~0.20 m 变化，则仍可能重建 shift 并引发 path jitter。
+        #   当前 max_deviation_from_lane=1.00 m：
+        #     可容纳最低 0.84 m 偏移，但容纳不了完整 1.44 m 理想偏移；
+        #     实际必须压缩 soft margin，并同时满足 drivable bound。
         # 横向控制参数
         #   控制自车绕行时的横向偏移量、偏移速度、可行驶区域边界等。
         # ----------------------------------------------------------------------
         lateral:
-          # 触发避让的最小横向偏移量 [m]
-          #   只有当计算出的必要偏移量大于此值时才执行避让
-          #   值越大 → 小幅度绕行被抑制，只有需要较大偏移的障碍物才执行避让
-          #           减少不必要的轻微绕行，车辆行驶更稳定
-          #   值越小 → 即使很小的偏移也会执行（更灵敏），但可能导致频繁微调
-          th_avoid_execution: 0.1
+          # 判断“避障动作已经开始”的当前横向偏移阈值 [m]（不是新 shift 的最低生成阈值）
+          #   当 |current_shift| > th_avoid_execution 时，模块认为车辆已进入 shifting。
+          #   值越大 → 更晚判定“已开始避障”，会影响 cancel/yield/状态机切换。
+          #   值越小 → 更早判定“已开始避障”；过小可能使状态更敏感。
+          #   真正的小 shift 过滤主要由 th_small_shift_length、quantize_size 和梯度修剪控制。
+          # official default (autoware_launch/main): th_avoid_execution: 0.09
+          th_avoid_execution: 0.12
           # 视为"小偏移"的横向长度阈值 [m]
           #   用于区分"轻微绕行"和"大幅度绕行"，影响路径平滑策略
           #   值越大 → 更多绕行被视为小偏移，使用更宽松的平滑策略
           #   值越小 → 只有非常小的偏移才被视为小偏移
-          # official default: th_small_shift_length: 0.101
+          # official default (autoware_launch/main): th_small_shift_length: 0.101
           th_small_shift_length: 0.05
-          # 软可行驶边界余量 [m]，允许路径轻微超出车道边界
-          #   值越大 → 允许更多超出车道边界（更灵活，但可能压线或越线）
-          #   值越小 → 更严格保持在车道内（更保守）
-          soft_drivable_bound_margin: 0.7
-          # 硬可行驶边界余量 [m]，绝对不可超越的边界
-          #   值越大 → 可行驶区域向内收缩更多（更保守，远离道路边界）
-          #   值越小 → 可行驶区域更贴近实际道路边界（更充分利用道路空间）
-          # official default: hard_drivable_bound_margin: 0.3
+          # 软可行驶边界余量 [m]：空间充足时希望车身与 drivable bound 保持的距离。
+          #   值越大 → 可用横向空间变小、路径更远离边界（更保守）。
+          #   值越小 → 更充分利用边界附近空间；不足时可继续放宽到 hard margin。
+          # official default (autoware_launch/main): soft_drivable_bound_margin: 0.3
+          soft_drivable_bound_margin: 0.3
+          # 硬可行驶边界余量 [m]：软余量放宽后仍必须保留的最低边界距离。
+          #   值越大 → 可行驶区域向内收缩更多（更保守）。
+          #   值越小 → 更接近道路边界；通常应满足 0 <= hard <= soft。
+          # official default (autoware_launch/main): hard_drivable_bound_margin: 0.3
           hard_drivable_bound_margin: 0.1
           # 允许向右偏移的最大距离 [m]（从车道中心线起算）
           #   值越大 → 允许更大幅度的右侧绕行，可绕过更宽的障碍物
           #   值越小 → 右侧绕行受限，可能导致只能向左绕或无法绕过
-          #   当前值 0.2 较小，用于测试阶段打破左右摇摆问题
-          # official default: max_right_shift_length: 5.0
-          # 静态绕障测试阶段临时压低右绕上限，用于打破正中障碍物左右候选抖动。
+          #   当前值 2.0 m 小于左绕上限 4.0 m，可形成“更偏向左绕”的候选约束，
+          #   但真正瓶颈还可能是 max_deviation_from_lane=1.0 m 和 drivable bound。
+          #   若要用左右上限打破正中障碍物的左右候选抖动，应保证目标偏置和车道边界也稳定。
+          # official default (autoware_launch/main): max_right_shift_length: 5.0
           max_right_shift_length: 2.0
           # 允许向左偏移的最大距离 [m]（从车道中心线起算）
           #   值越大 → 允许更大幅度的左侧绕行（可能借对向车道）
           #   值越小 → 左侧绕行受限
           #   若左右最大偏移都不足以绕过障碍物，则采取停车策略
-          # official default: max_left_shift_length: 5.0
+          # official default (autoware_launch/main): max_left_shift_length: 5.0
           max_left_shift_length: 4.0
           # 允许偏离车道中心的最大距离 [m]
           #   限制自车在任何情况下偏离车道中心线的总距离
           #   值越大 → 允许更大幅度偏离车道中心（更灵活的绕行）
           #   值越小 → 紧贴车道中心行驶，绕行能力受限
-          # official default: max_deviation_from_lane: 0.2
-          max_deviation_from_lane: 2.0
+          # official default (autoware_launch/main): max_deviation_from_lane: 0.2
+          max_deviation_from_lane: 1.0
           # 返回原车道的偏移量比例阈值
           #   当已完成的返回偏移量占总偏移量的比例超过此值时，批准返回动作
           #   值越大 → 需要接近完全返回才批准（更保守，确保安全返回）
           #   值越小 → 完成较小比例即批准返回（更早返回原车道）
+          # official default (autoware_launch/main): ratio_for_return_shift_approval: 0.5
           ratio_for_return_shift_approval: 0.5
 
         # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # 纵向可行性公式
+        # ----------------------------------------------------------------------
+        # 准备距离：
+        #   D_prepare_nom = max(v_ego * max_prepare_time, min_prepare_distance)
+        #   D_prepare_min = max(v_ego * min_prepare_time, min_prepare_distance)
+        #
+        # 横移纵向距离：
+        #   D_shift(j) = 4 * v_calc * cbrt(0.5 * abs(L_shift) / abs(j))
+        #
+        # envelope 前缓冲：
+        #   D_front = longitudinal_margin + optional(front_overhang)
+        #
+        # 标称最低距离：
+        #   D_required_nom = D_prepare_nom + D_shift(j_min_avoid) + D_front
+        #
+        # 近距放宽最低距离：
+        #   D_required_sharp = D_prepare_min + D_shift(j_max_usable) + D_front
+        #
+        # 判定：
+        #   S_available >= D_required_nom   => 标称平滑绕障可行
+        #   D_required_sharp <= S_available < D_required_nom
+        #                                  => 可能进入 CLOSE_DISTANCE_AVOIDANCE/放宽策略
+        #   S_available < D_required_sharp => INSUFFICIENT_LONGITUDINAL_DISTANCE
+        #
+        # v_calc 与减速：
+        #   模块会结合 nominal_avoidance_speed、min_slow_down_speed、
+        #   buf_slow_down_speed 及纵向 accel/jerk 约束寻找可行速度。
+        #
+        # 1 m/s 当前数值例（UNKNOWN 椅子，W_env~=0.70 m，y_obj=0）：
+        #   L_shift_min~=0.84 m，L_shift_desired~=1.44 m
+        #   D_prepare_nom=max(1.0*1.0,0.8)=1.00 m
+        #   D_prepare_min=max(1.0*0.5,0.8)=0.80 m
+        #   D_front=0.00+0.24=0.24 m
+        #   j_nom=0.20 m/s^3：
+        #     D_required_nom(L=0.84) ~= 6.36 m
+        #     D_required_nom(L=1.44) ~= 7.37 m
+        #   a_lat_max=0.50 m/s^2 约束下：
+        #     D_required_sharp(L=0.84) ~= 4.71 m
+        #     D_required_sharp(L=1.44) ~= 5.84 m
+        #   以上距离从 base_link 到 obstacle envelope 前缘计；换算到车头约分别减 1.06 m。
         # 纵向控制参数
         #   控制避障时的减速行为：何时减速、减到多慢、以及避障时的目标速度。
         # ----------------------------------------------------------------------
         longitudinal:
-          # 准备减速/停车的最短时间 [s]
+          # 避障横移开始前的最短准备时间 [s]（用于近距离/放宽条件，不是单纯停车时间）
           #   值越大 → 预留更多准备时间（更早开始减速，更平滑但可能过早减速）
           #   值越小 → 更晚开始减速准备（响应更快但可能急刹）
-          # official default: min_prepare_time: 1.0
-          min_prepare_time: 0.1
-          # 准备减速/停车的最长时间 [s]
+          # official default (autoware_launch/main): min_prepare_time: 1.0
+          min_prepare_time: 0.5
+          # 标称避障横移开始前的准备时间上限 [s]；有空间时尽量使用该值。
           #   值越大 → 允许更长的减速准备阶段（更平滑的减速）
           #   值越小 → 必须在更短时间内完成减速准备（更急促）
-          # official default: max_prepare_time: 3.0
-          max_prepare_time: 0.2
+          # official default (autoware_launch/main): max_prepare_time: 2.0
+          max_prepare_time: 1.0
           # 准备阶段的最小距离 [m]
           #   值越大 → 在更远距离就开始减速准备（更保守）
           #   值越小 → 更靠近障碍物才开始准备（更激进）
-          min_prepare_distance: 0.1
+          # official default (autoware_launch/main): min_prepare_distance: 1.0
+          min_prepare_distance: 0.8
+          # 1 m/s 例：
+          #   D_prepare_nom=max(1.0*max_prepare_time(1.0),0.8)=1.0 m
+          #   D_prepare_min=max(1.0*min_prepare_time(0.5),0.8)=0.8 m
+          #   若速度降到 0.35 m/s：
+          #     nominal=max(0.35*1.0,0.8)=0.8 m，准备距离由 min_prepare_distance 主导。
           # min_prepare_distance: 1.0
-          # 减速/停车的最低速度 [m/s]，减速的目标速度
+          # 避障准备段允许使用的最低慢行速度 [m/s]；也参与低速横向 jerk 可行性计算。
           #   值越大 → 避障时保持较高速度通过（更高效但风险更高）
           #   值越小 → 避障时速度更低（更安全但通行效率低）
           #   设为 0 则可能完全停车等待
-          # official default: min_slow_down_speed: 1.38
-          min_slow_down_speed: 0.3
-          # 减速/停车的缓冲速度增量 [m/s]
-          #   实际目标减速速度 = min_slow_down_speed + buf_slow_down_speed
-          #   值越大 → 减速后的实际速度更高（留有更多速度余量）
-          #   值越小 → 减速后速度更接近 min_slow_down_speed
-          buf_slow_down_speed: 0.56
+          # official default (autoware_launch/main): min_slow_down_speed: 1.38
+          min_slow_down_speed: 0.35
+          # 速度跟踪误差缓冲 [m/s]
+          #   控制器通常不能精确跟踪速度上限，因此模块会在可行目标速度基础上额外留出
+          #   该缓冲（生成更低的限速），避免实际速度略高时横移距离又变得不可行。
+          #   值越大 → 速度限制更保守、更低；值越小 → 更贴近理论可行速度。
+          # official default (autoware_launch/main): buf_slow_down_speed: 0.56
+          buf_slow_down_speed: 0.1
           # 标称避障速度 [m/s]，正常避障时推荐的目标速度
           #   值越大 → 绕行时保持较高速度（更高效，适合高速公路场景）
           #   值越小 → 绕行时速度较低（更安全，适合城市道路场景）
-          #   若低于此速度则加速至此速度进行绕行
-          # official default: nominal_avoidance_speed: 8.33
-          nominal_avoidance_speed: 1.0
+          #   不是强制“低于此速度就加速”；模块会结合可行性、减速度/jerk 和当前速度生成速度限制。
+          # official default (autoware_launch/main): nominal_avoidance_speed: 8.33
+          nominal_avoidance_speed: 0.7
           # 是否考虑前悬长度（车头到前轮的距离）
           #   true  → 考虑前悬，更精确地计算自车轮廓，避免车头扫到障碍物
           #   false → 忽略前悬，简化计算但可能低估自车占用空间
+          # official default (autoware_launch/main): consider_front_overhang: true
           consider_front_overhang: true
           # 是否考虑后悬长度（后轮到车尾的距离）
           #   true  → 考虑后悬，更精确地计算自车轮廓
           #   false → 忽略后悬
+          # official default (autoware_launch/main): consider_rear_overhang: true
           consider_rear_overhang: true
 
         # ----------------------------------------------------------------------
@@ -729,20 +1206,23 @@
             # 是否在终点前使用截止线
             #   true  → 终点前一段距离禁止开始新避障，确保在终点前恢复正常行驶
             #   false → 终点前仍可避障
+            # official default (autoware_launch/main): enable: true
             enable: false                 # 是否在终点前使用截止线
             # 截止线前的缓冲距离 [m]
             #   值越大 → 更早结束避障，在终点前有更多距离恢复正常行驶
             #   值越小 → 更靠近终点仍可避障
-            # official default: buffer: 3.0
+            # official default (autoware_launch/main): buffer: 3.0
             buffer: 0.5                  # 截止线前的缓冲距离 [m]
           traffic_light:
             # 是否在信号灯前使用截止线
             #   true  → 信号灯前禁止开始新避障（避免在路口附近做复杂绕行动作）
             #   false → 信号灯前仍可避障（风险较高）
+            # official default (autoware_launch/main): enable: true
             enable: true                 # 是否在信号灯前使用截止线
             # 信号灯前缓冲距离 [m]
             #   值越大 → 在信号灯前更远距离就停止避障，确保路口区域安全
             #   值越小 → 更靠近信号灯仍可避障
+            # official default (autoware_launch/main): buffer: 3.0
             buffer: 3.0                  # 缓冲距离 [m]
 
       # ========================================================================
@@ -754,13 +1234,14 @@
         #   true  → 当条件不满足时（如障碍物消失）可以中止正在进行的避障
         #   false → 一旦开始避障就必须完成，即使障碍物已消失
         #   设为 false 可防止因障碍物状态变化导致的避障路径中途变更
-        # official default: enable: true
+        # official default (autoware_launch/main): enable: true
         enable: true                    # 是否允许取消避让
         force:
           # 强制取消的持续时间 [s]，发出取消指令后等待此时间强制中止
           #   值越大 → 取消过程更平滑，给控制模块更多时间响应
           #   值越小 → 更快中止避障
-          duration_time: 5.0             # 强制取消的持续时间,默认参数2.0 [s]
+          # official default (autoware_launch/main): duration_time: 2.0
+          duration_time: 2.0
 
       # ========================================================================
       # 8. 让行/等待参数 (yield)
@@ -770,30 +1251,49 @@
         # 是否启用让行功能
         #   true  → 当判断绕行风险较高时选择停车等待而非绕行
         #   false → 总是尝试绕行而非等待（更激进）
-        # official default: enable: true
+        # official default (autoware_launch/main): enable: true
         enable: true                   # 是否启用让行
         # 横向偏移期间是否允许让行
         #   true  → 绕行过程中如果出现新的危险也允许临时停车等待
         #   false → 绕行过程中不会停车等待（更连贯但风险可能增加）
+        # official default (autoware_launch/main): enable_during_shifting: false
         enable_during_shifting: false    # 横向偏移期间是否允许让行
         # 让行时是否开启转向灯
         #   true  → 停车等待时打双闪或转向灯提示后方
         #   false → 不开启信号灯
+        # official default (autoware_launch/main): enable_signalling_during_yield: false
         enable_signalling_during_yield: false  # 让行时是否开启转向灯
 
       # ========================================================================
+      # ------------------------------------------------------------------------
+      # 停车距离与 stop 参数关系
+      # ------------------------------------------------------------------------
+      # 物理停车距离校核：
+      #   D_stop ~= v*T_delay + v^2/(2*abs(a_dec)) + D_margin
+      # stop.max_distance：仅定义本静态绕障模块在“未批准/yield 等情况”中
+      # 可插入 stop point 的最大目标距离；它不是 2 m 触发器，也不是实际制动距离。
+      # stop_buffer：目标 envelope 前保留的停车缓冲，增大更安全但可用准备距离更短。
+      #
+      # 1 m/s 工程例：
+      #   假设 T_delay=0.35 s、abs(a_dec)=1.0 m/s^2、D_margin=0.50 m：
+      #     D_stop ~= 1.0*0.35 + 1.0^2/(2*1.0) + 0.50 = 1.35 m
+      #   当前 stop_buffer=1.0 m 表示期望停车点位于 obstacle envelope 前约 1.0 m；
+      #   当前 stop.max_distance=2.0 m 只是本模块内部允许插入 stop point 的对象距离范围。
+      #   若从车头量到障碍物仅 2.0 m，在上述制动能力成立时理论上可停，
+      #   但若总延迟、地面附着或实际减速度更差，必须增大识别/制动触发距离。
       # 9. 停止参数 (stop)
       #   定义避障失败或绕行不可行时的停车行为。
       # ========================================================================
       stop:
-        # 触发停车的最大障碍物距离 [m]
-        #   障碍物距离小于此值且无法绕行时，触发停车
-        #   值越大 → 在更远距离就开始考虑停车（更保守，停车更平稳）
-        #   值越小 → 更靠近障碍物才停车（更激进，可能急刹）
-        max_distance: 20.0               # 触发停车的最大障碍物距离 [m]
+        # 未批准避障或 yield 状态下允许插入 stop point 的最大目标距离 [m]
+        #   值越大 → 更远的候选目标也可触发本模块停车；值越小 → 只对近处目标停车。
+        #   它不是物理制动距离，也不是“2 m 内停、2 m 外绕”的唯一切换参数。
+        # official default (autoware_launch/main): max_distance: 20.0
+        max_distance: 2.0
         # 停车点前的缓冲距离 [m]
         #   值越大 → 在障碍物前更远处停车（更安全）
         #   值越小 → 更贴近障碍物停车
+        # official default (autoware_launch/main): stop_buffer: 1.0
         stop_buffer: 1.0                 # 停车点前的缓冲距离 [m]
 
       # ========================================================================
@@ -801,38 +1301,70 @@
       #   定义避障行为的高层策略偏好。
       # ========================================================================
       policy:
-        # 检测可靠性等级
-        #   "reliable"   → 仅相信高置信度的检测结果（减少误检导致的错误避让）
-        #   "best_effort" → 使用所有检测结果（可能因误检而执行不必要的避让）
-        #   "reliable" 更保守（在感知层面），减少不必要的避让
+        # 感知可靠性策略
+        #   "reliable"  → 模块充分信任感知结果，可按 AUTO/RTC 策略自动决策。
+        #   "not_enough"→ 认为远距离感知不足，在需要远距判断时等待人工/RTC 决策。
+        #   注意：可选值不是 "best_effort"。
+        # official default (autoware_launch/main): detection_reliability: "reliable"
         detection_reliability: "reliable"
         # 批准请求的方式
         #   "per_shift_line" → 针对每条生成的偏移路径单独请求批准
         #   "per_shift_line" 提供更细粒度的控制
+        # official default (autoware_launch/main): make_approval_request: "per_shift_line"
         make_approval_request: "per_shift_line"
-        # 减速策略
-        #   "best_effort" → 尽量减速但不保证完全停止
-        #   "strict"      → 严格按照计算的减速曲线执行
-        #   "best_effort" 更灵活，适应更多场景
+        # 减速策略（可选 "best_effort" / "reliable"）
+        #   "best_effort" → 遵守配置的纵向 decel/jerk 约束 j_lat       : 横向 jerk 绝对值 [m/s^3]，可能无法在目标前完全停住。
+        #   "reliable"    → 必要时忽略舒适 decel/jerk 约束插入停止/减速点，提高停住概率。
+        # official default (autoware_launch/main): deceleration: "best_effort"
         deceleration: "best_effort"
-        # 横向余量策略
-        #   "best_effort" → 尽量满足横向安全余量但不强制
-        #   "strict"      → 严格满足横向余量要求
-        #   "best_effort" 允许在空间不足时适当压缩余量以完成避让
+        # 横向余量策略（可选 "best_effort" / "reliable"）
+        #   "best_effort" → 纵向距离不足时可缩短 soft margin 生成候选路径。
+        #   "reliable"    → 只有满足期望横向余量时才以安全/可批准状态输出候选路径。
+        # official default (autoware_launch/main): lateral_margin: "best_effort"
         lateral_margin: "best_effort"
         # 是否立即使用缩小的安全边界
         #   true  → 当无法满足完整安全边界时，立即使用缩小的边界（更快响应）
         #   false → 先尝试满足完整边界，失败后才缩小（更保守）
+        # official default (autoware_launch/main): use_shorten_margin_immediately: true
         use_shorten_margin_immediately: true
         # 候选路径的转向灯信号
         #   "none" → 不显示转向灯
         #   其他选项可指示绕行方向
+        # official default (autoware_launch/main): candidate_path_turn_signal: "none"
         candidate_path_turn_signal: "none"
         # 批准保持期间转向灯亮起的持续时间 [s]
         #   值越大 → 转向灯闪烁更久
+        # official default (autoware_launch/main): turn_signal_on_approval_hold_duration: 3.0
         turn_signal_on_approval_hold_duration: 3.0
 
       # ========================================================================
+      # ------------------------------------------------------------------------
+      # 运动学约束插值/联合限制公式
+      # ------------------------------------------------------------------------
+      # velocity、max_accel_values、min/max_jerk_values 按当前速度分段线性插值。
+      # 标称路径优先使用 min_jerk_values；距离不足时可向 max_jerk_values 放宽。
+      #
+      # PathShifter：
+      #   D_shift = 4*v*cbrt(0.5*L_shift/j)
+      #
+      # 峰值横向加速度近似：
+      #   a_peak ~= cbrt(0.5*L_shift*j^2)
+      #   j_max_by_accel ~= sqrt(2*a_lat_max^3/max(L_shift, epsilon))
+      #   j_max_usable = min(j_max_interpolated, j_max_by_accel)
+      #
+      # 1 m/s 当前数值例：
+      #   1.0 < velocity[0](1.39)，示例采用第一档：
+      #     a_lat_max=0.50，j_min=0.20，j_max_param=3.00
+      #   对 L_shift=0.84：
+      #     j_max_by_accel~=sqrt(2*0.50^3/0.84)=0.546
+      #     j_max_usable~=min(3.00,0.546)=0.546 m/s^3
+      #   对 L_shift=1.44：
+      #     j_max_by_accel~=0.417 m/s^3
+      #   因此仅把 max_jerk_values 设得很大，并不会无限缩短横移距离；
+      #   max_accel_values 会成为实际限制，而且控制器还必须能跟踪该横向动态。
+      #
+      # 纵向停车/减速约束：nominal 值用于舒适规划，max 值用于放宽；
+      # 若实车实际能力小于参数声明值，规划出的路径/速度将不可跟踪且存在安全风险。
       # 11. 运动学约束 (constraints)
       #   限制横向和纵向的速度、加速度、加加速度（jerk），确保生成的轨迹
       #   满足车辆动力学限制和乘客舒适度要求。
@@ -846,24 +1378,28 @@
           # 速度断点 [m/s]，将速度域分为多个区间
           #   与 max_accel_values / min_jerk_values / max_jerk_values 一一对应
           #   当前设置：[低速, 中速, 高速] = [5km/h, 15km/h, 40km/h]
+          # official default (autoware_launch/main): velocity: [1.39, 4.17, 11.1]
           velocity: [1.39, 4.17, 11.1]
           # 各速度段的最大横向加速度 [m/s²]
           #   值越大 → 绕行动作更快更敏捷（乘客可能感到不适，侧倾更大）
           #   值越小 → 绕行动作更平缓（更舒适但避障响应更慢）
           #   当前所有速度段均为 0.5，表示不随速度变化
+          # official default (autoware_launch/main): max_accel_values: [0.5, 0.5, 0.5]
           max_accel_values: [0.5, 0.5, 0.5]
           # 各速度段的最小横向 jerk [m/s³]（避让时和返回时分别设置）
           #   jerk 是加速度的变化率，决定了动作的"突兀"程度
           #   值越大（绝对值）→ 加速度变化更快，动作更干脆（乘客可能感到突兀）
           #   值越小（绝对值）→ 加速度变化更慢，动作更柔和（更舒适但响应慢）
           min_jerk_values:
+            # official default (autoware_launch/main): avoid: [0.2, 0.2, 0.2]
             avoid: [0.2, 0.2, 0.2]
+            # official default (autoware_launch/main): return: [0.2, 0.2, 0.2]
             return: [0.2, 0.2, 0.2]
           # 各速度段的最大横向 jerk [m/s³]
           #   值越大 → 允许更快的加速度变化（绕行更敏捷但不舒适）
           #   值越小 → 限制加速度变化速度（更舒适但绕行迟缓）
-          #   当前设为 3.0（比默认 1.0 更大），绕行动作更敏捷
-          # official default: max_jerk_values: [1.0, 1.0, 1.0]
+          #   当前值与 autoware_launch/main 默认值一致；是否适合实车仍需按横向加速度能力验证
+          # official default (autoware_launch/main): max_jerk_values: [3.0, 3.0, 3.0]
           max_jerk_values: [3.0, 3.0, 3.0]
 
         # ----------------------------------------------------------------------
@@ -874,27 +1410,36 @@
           # 标称减速度 [m/s²]
           #   值越负（绝对值越大）→ 刹车更猛，减速更快（更安全但乘客不适）
           #   值越接近 0 → 减速更平缓（更舒适但制动距离更长）
+          # official default (autoware_launch/main): nominal_deceleration: -1.0
           nominal_deceleration: -1.0      # 标称减速度 [m/s²]
           # 标称纵向 jerk [m/s³]
           #   值越大 → 刹车力度变化更快（制动更急促）
           #   值越小 → 刹车力度变化更慢（制动更柔和）
+          # official default (autoware_launch/main): nominal_jerk: 0.5
           nominal_jerk: 0.5               # 标称纵向 jerk [m/s³]
           # 最大减速度 [m/s²]，紧急情况下的减速度上限
           #   值越负（绝对值越大）→ 紧急制动能力更强（但乘客可能感到不适）
           #   值越接近 0 → 最大制动力受限
+          # official default (autoware_launch/main): max_deceleration: -1.5
           max_deceleration: -1.5          # 最大减速度 [m/s²]
+          # 1 m/s 纯匀减速项示例（尚未计延迟/jerk/裕量）：
+          #   nominal_deceleration=-1.0 => v^2/(2|a|)=1^2/(2*1.0)=0.50 m
+          #   max_deceleration=-1.5     => v^2/(2|a|)=1^2/(2*1.5)=0.33 m
+          #   实际停车距离必须再加 T_delay*v、纵向 jerk 建立制动力的距离和安全裕量。
           # 最大纵向 jerk [m/s³]
           #   值越大 → 允许更剧烈的刹车力变化（紧急情况响应更快）
           #   值越小 → 限制刹车力变化速度（更舒适但紧急响应慢）
+          # official default (autoware_launch/main): max_jerk: 1.0
           max_jerk: 1.0                   # 最大纵向 jerk [m/s³]
           # 最大加速度 [m/s²]
           #   值越大 → 绕行完成后加速更快（更快恢复速度，通行效率高）
           #   值越小 → 加速更平缓（更舒适，节能）
+          # official default (autoware_launch/main): max_acceleration: 0.5
           max_acceleration: 0.5           # 最大加速度 [m/s²]
-          # 限制最大加速度的最低速度阈值 [m/s]（约 10 km/h）
-          #   自车速度低于此值时，不限制加速度（允许全油门起步）
-          #   值越大 → 在更高速度以下都不限制加速度（起步更快）
-          #   值越小 → 仅在很低速度时才允许全加速度
+          # 开始应用 max_acceleration 限制的最低自车速度阈值 [m/s]
+          #   自车速度高于该值时，模块应用 max_acceleration；低于该值时不使用此上限。
+          #   增大 → 更多低/中速区间不受该上限约束；减小 → 更早限制加速度。
+          # official default (autoware_launch/main): min_velocity_to_limit_max_acceleration: 2.78
           min_velocity_to_limit_max_acceleration: 2.78
 
       # ========================================================================
@@ -903,24 +1448,38 @@
       # "shift_line_base" → 基于偏移线生成避障路径
       #   先计算车道中心线的横向偏移量，再基于偏移后的参考线生成平滑路径
       #   这是当前主要的路径生成方式，适合车道内有清晰参考线的场景
+      # official default (autoware_launch/main): path_generation_method: "shift_line_base"
       path_generation_method: "shift_line_base"
 
       # ========================================================================
+      # ------------------------------------------------------------------------
+      # shift line 修剪公式/逻辑
+      # ------------------------------------------------------------------------
+      # quantize_size：
+      #   L_quantized ~= round(L_shift / quantize_size) * quantize_size
+      #   用于忽略细小横向变化。
+      # th_small_shift_length：相邻 shift 变化小于阈值时倾向合并。
+      # th_similar_grad_1/2/3：若中间 shift 点接近前后点连线的梯度，则移除中间点，
+      # 以减少不必要的折点；阈值过大可能过度简化，过小可能保留抖动。
       # 13. 偏移线流水线参数 (shift_line_pipeline)
       #   控制偏移线生成过程中的修剪和平滑处理。
       # ========================================================================
       shift_line_pipeline:
         trim:
-          # 量化尺寸 [m]，路径点坐标的量化精度
-          #   值越大 → 路径更粗糙但计算更快
-          #   值越小 → 路径更精细平滑但计算量增大
+          # 横向 shift 量化步长 [m]（不是路径点坐标分辨率）
+          #   值越大 → 更强地忽略小幅 shift 变化，减少抖动，但可能损失小障碍物响应。
+          #   值越小 → 保留更多细小 shift 变化，响应更灵敏，但可能增加 Path Jitter。
+          # official default (autoware_launch/main): quantize_size: 0.1
           quantize_size: 0.1              # 量化尺寸 [m]
           # 相似梯度阈值 1/2/3，用于路径修剪时判断相邻段的梯度相似性
           #   三个阈值从严格到宽松，用于不同阶段的修剪
           #   值越大 → 更多路径段被视为"相似"而合并（路径更简洁但可能丢失细节）
           #   值越小 → 保留更多路径细节（路径更精确但可能不够平滑）
+          # official default (autoware_launch/main): th_similar_grad_1: 0.1
           th_similar_grad_1: 0.1          # 相似梯度阈值1（最严格）
+          # official default (autoware_launch/main): th_similar_grad_2: 0.2
           th_similar_grad_2: 0.2          # 相似梯度阈值2（中等）
+          # official default (autoware_launch/main): th_similar_grad_3: 0.5
           th_similar_grad_3: 0.5          # 相似梯度阈值3（最宽松）
 
       # ========================================================================
@@ -930,18 +1489,26 @@
       # ========================================================================
       debug:
         # 显示其他物体标记（障碍物包围框等）
+        # official default (autoware_launch/main): enable_other_objects_marker: true
         enable_other_objects_marker: true
         # 显示其他物体信息（速度、类型、距离等文字标注）
+        # official default (autoware_launch/main): enable_other_objects_info: true
         enable_other_objects_info: true
         # 显示检测区域（前向/后向检测范围的可视化）
+        # official default (autoware_launch/main): enable_detection_area_marker: false
         enable_detection_area_marker: true
         # 显示可行驶边界（车道边界、自由空间边界等）
-        enable_drivable_bound_marker: true  # 显示可行驶边界,默认参数false
+        # official default (autoware_launch/main): enable_drivable_bound_marker: false
+        enable_drivable_bound_marker: true
         # 显示安全校验信息（碰撞预测线、安全/危险区域等）
-        enable_safety_check_marker: true     # 显示安全校验信息,默认参数false
+        # official default (autoware_launch/main): enable_safety_check_marker: false
+        enable_safety_check_marker: true
         # 显示偏移线（生成的避障路径参考线）
+        # official default (autoware_launch/main): enable_shift_line_marker: false
         enable_shift_line_marker: true
         # 显示车道线
-        enable_lane_marker: true             # 显示车道线,默认参数false
+        # official default (autoware_launch/main): enable_lane_marker: false
+        enable_lane_marker: true
         # 显示杂项标记（其他调试信息）
-        enable_misc_marker: true             # 显示杂项标记,默认参数false
+        # official default (autoware_launch/main): enable_misc_marker: false
+        enable_misc_marker: true

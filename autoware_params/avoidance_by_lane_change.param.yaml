@@ -111,8 +111,8 @@
         # ---- 未知类别 ----
         # 感知无法分类的目标：低速阈值更低以捕获更多潜在障碍
         unknown:
-          th_moving_speed: 2.0                            #默认参数0.28 [m/s] (~1.0km/h) 极低速判定
-          th_moving_time: 2.0                              #默认参数1.0
+          th_moving_speed: 3.0                            #默认参数0.28 [m/s] (~1.0km/h) 极低速判定
+          th_moving_time: 1.0                              #默认参数1.0
           max_expand_ratio: 0.0                            #默认参数0.0
           envelope_buffer_margin: 0.3                      #默认参数0.3
           lateral_margin:

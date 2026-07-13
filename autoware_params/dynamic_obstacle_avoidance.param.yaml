@@ -28,7 +28,7 @@
         bus: true
         trailer: true
         # official default: unknown: false
-        unknown: false         # 未知类型，先关闭，避免静止/抖动 UNKNOWN 参与动态绕障
+        unknown: true         # 未知类型，先关闭，避免静止/抖动 UNKNOWN 参与动态绕障
         bicycle: true
         motorcycle: true
         pedestrian: true
@@ -36,7 +36,7 @@
         # 考虑避障的物体速度范围 [m/s]
         max_obstacle_vel: 100.0   # 最大速度，超过此速度的物体忽略
         # official default: min_obstacle_vel: 0.0
-        min_obstacle_vel: 0.5     # 最小速度，低于此速度的物体忽略
+        min_obstacle_vel: 2.0     # 最小速度，低于此速度的物体忽略
 
         # 进入动态避障状态所需的连续帧数。
         # 物体需在连续多少帧满足条件后，才触发避障，防噪声。

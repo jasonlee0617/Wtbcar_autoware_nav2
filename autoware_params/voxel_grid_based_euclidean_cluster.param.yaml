@@ -36,7 +36,7 @@
     # tolerance: 0.7
     # 0.35 m 在实车低线束/稀疏点云下容易把一个障碍拆成多个小 UNKNOWN 碎片。
     # 0.5 m 先保证前方障碍能形成稳定对象；若后续墙体粘连，再回调到 0.4。
-    tolerance: 0.7                                       # [m] 聚类距离阈值
+    tolerance: 0.3                                      # [m] 聚类距离阈值
 
     # ---- 体素尺寸 ----
     # voxel_leaf_size: 体素立方体的边长 [m]。
@@ -62,7 +62,7 @@
 
     # max_cluster_size: 一个簇最多包含多少个体素才被保留。
     #   超过此值的簇被视为背景（墙壁、整面楼体），直接丢弃。
-    max_cluster_size: 3000                               # [-] 最大簇体素数（this is the maximum number of voxels when clustered）
+    max_cluster_size: 300                               # [-] 最大簇体素数（this is the maximum number of voxels when clustered）
 
     # =========================================================================
     # 2. 体素级过滤 —— 针对大簇内部的噪点清理
@@ -107,10 +107,10 @@
     # low height crop box filter param
 
     # ---- XY 范围 ----
-    max_x: 200.0                                         # [m] 前向最远距离
-    min_x: -200.0                                        # [m] 后向最远距离
-    max_y: 200.0                                         # [m] 左侧最远距离
-    min_y: -200.0                                        # [m] 右侧最远距离
+    max_x: 15.0                                         # [m] 前向最远距离，默认200
+    min_x: -0.5                                        # [m] 后向最远距离，默认-200
+    max_y: 5.0                                         # [m] 左侧最远距离，默认200
+    min_y: -5.0                                        # [m] 右侧最远距离，默认-200
 
     # ---- Z 范围（高度裁剪） ----
     # max_z: 保留点的最高高度。高于此值的点被丢弃（树枝、路牌、天桥等）。

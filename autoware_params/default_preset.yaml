@@ -229,8 +229,8 @@ launch:
   # 检测轨迹上的障碍物（点云+检测框），在障碍物前方规划停车
   - arg:
       name: launch_obstacle_stop_module
-    #   default: "true"
-      default: "false"
+      default: "true"
+    #   default: "false"
 
   # ---- 障碍物减速 ----
   # 在靠近障碍物时规划减速而非完全停车（用于不确定的/远处的障碍物）
@@ -248,8 +248,8 @@ launch:
   # 专门针对移动中的障碍物（横穿车辆、行人）预测轨迹并规划停车
   - arg:
       name: launch_dynamic_obstacle_stop_module
-    #   default: "true"
-      default: "false"
+      default: "true"
+    #   default: "false"
 
   # ---- 车道外模块 ----
   # 监测可能从车道外（对向车道、路肩）侵入自车轨迹的障碍物
@@ -299,7 +299,7 @@ launch:
   # ==========================================================================
   - arg:
       name: launch_surround_obstacle_checker
-      default: "false"
+      default: "true"  #默认true
 
   # ==========================================================================
   # 9. 泊车模块 (Parking Module)

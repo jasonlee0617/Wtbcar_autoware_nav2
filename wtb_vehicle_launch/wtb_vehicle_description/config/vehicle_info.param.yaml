@@ -25,8 +25,8 @@
 
     # max_velocity: 1.0
     # max_acceleration: 1.0
-    max_velocity: 0.5
-    max_acceleration: 0.5
+    max_velocity: 1.0
+    max_acceleration: 1.0
     min_acceleration: -1.0
 
     cog_to_rear_axle: 0.41

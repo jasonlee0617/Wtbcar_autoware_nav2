@@ -23,11 +23,11 @@
       stop_planning:
         # 自车与障碍物之间的纵向停车距离 [m]
         # stop_margin : 1.0
-        stop_margin : 1.8
+        stop_margin : 1.0
 
         # 目标点(gola)处的停车距离。该值不能超过 stop_margin [m]
         # terminal_stop_margin : 1.0
-        terminal_stop_margin : 1.2
+        terminal_stop_margin : 1.0
 
         # 行为规划(behavior planner)插入的停车点处的最小停车距离 [m]
         min_behavior_stop_margin: 1.0

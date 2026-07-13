@@ -1,83 +1,333 @@
 /**:
   ros__parameters:
+    # ============================================================================
+    # Obstacle Cruise 模块 — 动态障碍物的跟车巡航与减速规划
+    #   位置: motion_velocity_planner > obstacle_cruise
+    #   作用: 处理自车轨迹上的动态障碍物（前车、插入车、横穿车），根据 RSS
+    #         安全距离公式计算理想跟车距离，通过 PID 或优化方法输出速度限制
+    #
+    #   RSS 安全距离公式:
+    #     rss_dist = ego_vel * idling_time
+    #              + ego_vel^2 / (2 * |min_ego_accel|)
+    #              - obj_vel^2 / (2 * |min_object_accel|)
+    #              + safe_distance_margin
+    #
+    #   算法模式 (planning_algorithm):
+    #   - "pid_base": PID 控制器调节速度以保持安全距离（当前使用）
+    #   - "optimization_base": QP 优化器平滑速度曲线
+    #
+    #   障碍物分类:
+    #   - inside:  轨迹上的障碍物（前车跟车/减速）
+    #   - outside: 轨迹外的障碍物（旁车 cut-in 判断）
+    #   - crossing: 横穿轨迹的障碍物（十字路口场景）
+    #   - yield:   旁车道有障碍物阻挡，需让行
+    #
+    #   NOTE: 上游默认值与本文件完全相同（无差异覆盖）
+    # ============================================================================
     obstacle_cruise:
+      # --------------------------------------------------------------------------
+      # 算法选择
+      # --------------------------------------------------------------------------
       option:
-        planning_algorithm: "pid_base" # currently supported algorithm is "pid_base"
+        # 规划算法类型
+        #   "pid_base"        : 使用 PID 控制器（当前激活，稳定可靠）
+        #   "optimization_base": 使用 QP 优化器（实验性，需额外依赖）
+        #   上游默认值: "pid_base"（相同）
+        planning_algorithm: "pid_base"
 
+      # =========================================================================
+      # 跟车巡航规划 (PID 模式下的核心参数)
+      # =========================================================================
       cruise_planning:
-        idling_time: 2.0 # idling time to detect front vehicle starting deceleration [s]
-        min_ego_accel_for_rss: -1.0 # ego's acceleration to calculate RSS distance [m/ss]
-        min_object_accel_for_rss: -1.0 # front obstacle's acceleration to calculate RSS distance [m/ss]
-        safe_distance_margin : 5.0 # This is also used as a stop margin [m]
+        # -----------------------------------------------------------------------
+        # idling_time [秒] — 反应/空转时间
+        #   RSS 公式第一项: ego_vel * idling_time
+        #   ↑ 增大（如 3.0）: 更大的安全距离，反应更保守
+        #     → 对前车减速响应更早，但跟车距离拉大，通行效率降低
+        #   ↓ 减小（如 1.0）: 更短安全距离，反应更激进
+        #     → 跟车更紧，但可能来不及应对前车急刹
+        #   上游默认值: 2.0（相同）
+        # -----------------------------------------------------------------------
+        idling_time: 2.0
+        # -----------------------------------------------------------------------
+        # min_ego_accel_for_rss [m/s^2] — 自车 RSS 减速度（负值=减速能力）
+        #   RSS 公式第二项: ego_vel^2 / (2 * |此值|)
+        #   ↑ 增大（更负，如 -2.0）: 假设自车能更快刹停 → 允许更小的安全距离
+        #     → 跟车更紧凑，但假设过于乐观可能不够安全
+        #   ↓ 减小（更接近0，如 -0.5）: 假设自车刹车能力弱 → 要求更大安全距离
+        #     → 跟车更远，更安全但保守
+        #   上游默认值: -1.0（相同）
+        # -----------------------------------------------------------------------
+        min_ego_accel_for_rss: -1.0
+        # -----------------------------------------------------------------------
+        # min_object_accel_for_rss [m/s^2] — 前车 RSS 减速度（负值=减速能力）
+        #   RSS 公式第三项: -obj_vel^2 / (2 * |此值|)，从安全距离中扣除
+        #   原理: 前车也能刹车，所以安全距离可以缩短
+        #   ↑ 增大（更负，如 -3.0）: 假设前车刹车强 → 从安全距离中扣除更少
+        #     → 安全距离更大（保守：不指望前车自己能停）
+        #   ↓ 减小（更接近0，如 -0.5）: 假设前车刹车弱 → 扣除更多
+        #     → 安全距离更小（乐观：相信前车能急刹）
+        #   上游默认值: -1.0（相同）
+        # -----------------------------------------------------------------------
+        min_object_accel_for_rss: -1.0
+        # -----------------------------------------------------------------------
+        # safe_distance_margin [米] — 静态安全距离余量
+        #   RSS 公式第四项（常数），也是停车时的缓冲距离
+        #   ↑ 增大（如 8.0）: 更保守，跟车时始终保持更远的最小间距
+        #     → 更安全但通行效率低
+        #   ↓ 减小（如 2.0）: 允许更贴近前车
+        #     → 通行效率高，但停车时缓冲不足
+        #   上游默认值: 5.0（相同）
+        # -----------------------------------------------------------------------
+        safe_distance_margin : 5.0
 
+        # =======================================================================
+        # PID 规划器参数（当前激活的算法）
+        # =======================================================================
         pid_based_planner:
+          # --------------------------------------------------------------------
+          # use_velocity_limit_based_planner — 子模式选择
+          #   true : 输出 VelocityLimit 消息（速度上限限制，当前使用）
+          #     → 下游节点基于速度上限做平滑
+          #   false: 直接修改轨迹点速度值（velocity_insertion_based）
+          #     → 使用 kp/kd jerk PID 直接调整轨迹
+          #   上游默认值: true（相同）
+          # --------------------------------------------------------------------
           use_velocity_limit_based_planner: true
-          error_function_type: quadratic # choose from linear, quadratic
+          # --------------------------------------------------------------------
+          # error_function_type — 误差函数类型
+          #   "linear"   : error = val（直接使用原始误差）
+          #   "quadratic": error = sign(val) * val^2（平方变换，当前使用）
+          #   作用于归一化距离误差 (error_cruise_dist / dist_to_obstacle)
+          #   quadratic 效果: 小误差时几乎不做修正（平方后更小），大误差时强力修正
+          #     → 减少对微小距离偏差的抖动，对大偏差反应强烈
+          #   上游默认值: "quadratic"（相同）
+          # --------------------------------------------------------------------
+          error_function_type: quadratic
 
+          # =================================================================
+          # 速度限制子规划器 (velocity_limit_based) — 当前激活的子模式
+          #   工作流程: 距离误差 → PID → 速度调整量 → 加速度转换 → 速度限制输出
+          # =================================================================
           velocity_limit_based_planner:
-              # PID gains to keep safe distance with the front vehicle
+              # PID 控制器增益 — 保持与前方障碍物的安全距离
+              # -----------------------------------------------------------------
+              # kp [无量纲] — 比例增益
+              #   输出 = kp * error
+              #   ↑ 增大（如 20.0）: 对距离误差反应更快更强
+              #     → 快速纠正跟车距离偏差，但可能产生速度振荡
+              #   ↓ 减小（如 5.0）: 反应平缓
+              #     → 更平滑但跟上距离变化慢，可能短暂太近或太远
+              #   上游默认值: 10.0（相同）
+              # -----------------------------------------------------------------
               kp: 10.0
+              # -----------------------------------------------------------------
+              # ki [无量纲] — 积分增益
+              #   ↑ 增大（如 0.5）: 消除稳态误差，但可能产生积分饱和
+              #   ↓ 减小（如 0.0）: 无积分作用（当前值），允许一定的稳态偏差
+              #   上游默认值: 0.0（相同）
+              # -----------------------------------------------------------------
               ki: 0.0
+              # -----------------------------------------------------------------
+              # kd [无量纲] — 微分增益
+              #   ↑ 增大（如 5.0）: 阻尼更强，抑制速度振荡
+              #     → 更稳定平滑，但对噪声敏感
+              #   ↓ 减小（如 0.0）: 无阻尼，速度可能振荡
+              #   上游默认值: 2.0（相同）
+              # -----------------------------------------------------------------
               kd: 2.0
 
-              output_ratio_during_accel: 0.6 # target acceleration is multiplied with this value while ego accelerates to catch up the front vehicle [-]
-              vel_to_acc_weight: 12.0 # target acceleration is calculated by (target_velocity - current_velocity) * vel_to_acc_weight [-]
+              # -----------------------------------------------------------------
+              # output_ratio_during_accel [-] — 加速时的输出缩放
+              #   仅当距离误差为正（自车落后于理想距离，应加速）时生效
+              #   target_acc = 此值 * PID输出
+              #   ↑ 增大（如 1.0）: 加速追赶更积极
+              #     → 更快恢复跟车距离，但舒适性下降
+              #   ↓ 减小（如 0.3）: 加速追赶更温和
+              #     → 更舒适但跟车距离恢复慢
+              #   上游默认值: 0.6（相同）
+              # -----------------------------------------------------------------
+              output_ratio_during_accel: 0.6
+              # -----------------------------------------------------------------
+              # vel_to_acc_weight [-] — 速度增量→加速度转换系数
+              #   target_acc = vel_to_acc_weight * (target_vel - current_vel)
+              #   ↑ 增大（如 20.0）: 速度差转换为更大的加速度
+              #     → 更快速地改变速度
+              #   ↓ 减小（如 5.0）: 加速/减速更平缓
+              #   上游默认值: 12.0（相同）
+              # -----------------------------------------------------------------
+              vel_to_acc_weight: 12.0
 
+              # -----------------------------------------------------------------
+              # enable_jerk_limit_to_output_acc — 加速度 jerk 限幅
+              #   true : 输出加速度变化率受 common_param.max_jerk/min_jerk 限制
+              #     → 更平滑但响应慢
+              #   false: 不限幅（当前值）
+              #     → 响应快但可能突然加减速
+              #   上游默认值: false（相同）
+              # -----------------------------------------------------------------
               enable_jerk_limit_to_output_acc: false
 
+              # -----------------------------------------------------------------
+              # disable_target_acceleration — 禁用目标加速度计算
+              #   true : 强制 target_acc = min_accel_during_cruise（当前值）
+              #     → 仅输出减速限制，不计算加速指令（简化模式）
+              #   false: 正常计算 target_acc
+              #     → 需要设置 enable_jerk_limit_to_output_acc=true
+              #   上游默认值: true（相同）
+              # -----------------------------------------------------------------
               disable_target_acceleration: true
 
+          # =================================================================
+          # 速度插入子规划器 (velocity_insertion_based) — 仅在 use_velocity_limit_based_planner=false 时生效
+          #   工作流程: 直接修改轨迹点的速度和加速度值
+          #   NOTE: 当前 use_velocity_limit_based_planner=true，以下参数均不生效
+          # =================================================================
           velocity_insertion_based_planner:
+              # ----------------------------------------------------------------
+              # PID 加速度控制增益
+              # ----------------------------------------------------------------
               kp_acc: 6.0
               ki_acc: 0.0
               kd_acc: 2.0
-
+              # ----------------------------------------------------------------
+              # PID 加加速度(jerk)控制增益
+              # ----------------------------------------------------------------
               kp_jerk: 20.0
               ki_jerk: 0.0
               kd_jerk: 0.0
-
-              output_acc_ratio_during_accel: 0.6 # target acceleration is multiplied with this value while ego accelerates to catch up the front vehicle [-]
-              output_jerk_ratio_during_accel: 1.0 # target acceleration is multiplied with this value while ego accelerates to catch up the front vehicle [-]
-
+              # ----------------------------------------------------------------
+              # 加速时的 PID 输出缩放
+              # ----------------------------------------------------------------
+              output_acc_ratio_during_accel: 0.6
+              output_jerk_ratio_during_accel: 1.0
+              # ----------------------------------------------------------------
+              # 加速度 jerk 限幅
+              # ----------------------------------------------------------------
               enable_jerk_limit_to_output_acc: true
 
-          min_accel_during_cruise: -2.0 # minimum acceleration during cruise to slow down [m/ss]
-          min_cruise_target_vel: 0.0 # minimum target velocity during slow down [m/s]
+          # =================================================================
+          # PID 规划器通用参数（两种子模式共享）
+          # =================================================================
+          # --------------------------------------------------------------------
+          # min_accel_during_cruise [m/s^2] — 巡航减速的最大减速度（负值）
+          #   ↑ 增大（更负，如 -3.0）: 允许更猛的减速
+          #     → 需要时能快速减速，但舒适性降低
+          #   ↓ 减小（更接近0，如 -1.0）: 减速更温和
+          #     → 更舒适但可能无法及时减速到安全距离
+          #   上游默认值: -2.0（相同）
+          # --------------------------------------------------------------------
+          min_accel_during_cruise: -2.0
+          # --------------------------------------------------------------------
+          # min_cruise_target_vel [m/s] — 巡航时的最低目标速度
+          #   ↑ 增大（如 2.0）: 最多减速到此速度（不刹停）
+          #     → 更流畅，但前方有障碍物时可能不停止
+          #   ↓ 减小（如 0.0）: 允许减速到完全停止（当前值）
+          #     → 更安全，但频繁起停影响舒适性和效率
+          #   上游默认值: 0.0（相同）
+          # --------------------------------------------------------------------
+          min_cruise_target_vel: 0.0
+          # --------------------------------------------------------------------
+          # time_to_evaluate_rss [秒] — RSS 提前评估时间偏移
+          #   dist_to_obstacle = actual_dist + (obj_vel - ego_vel) * 此值
+          #   ↑ 正值: 提前考虑未来时刻的相对距离
+          #     → 如果前车更快（拉开距离），实际控制距离更大（更乐观）
+          #     → 如果前车更慢（接近），实际控制距离更小（更保守）
+          #   = 0.0: 仅使用当前时刻的距离（当前值）
+          #   上游默认值: 0.0（相同）
+          # --------------------------------------------------------------------
           time_to_evaluate_rss: 0.0
 
+          # --------------------------------------------------------------------
+          # lpf_normalized_error_cruise_dist_gain [-] — 归一化距离误差低通滤波增益
+          #   值域 [0, 1]，越小滤波越强
+          #   ↑ 增大（如 0.5）: 滤波作用弱，误差信号变化更快
+          #     → 响应快速但可能抖动
+          #   ↓ 减小（如 0.05）: 滤波作用强，输出更平滑
+          #     → 稳定但响应滞后
+          #   上游默认值: 0.2（相同）
+          # --------------------------------------------------------------------
           lpf_normalized_error_cruise_dist_gain: 0.2
 
+        # =======================================================================
+        # 优化规划器参数 — 仅在 planning_algorithm="optimization_base" 时生效
+        #   NOTE: 当前使用 pid_base，以下参数均不生效
+        # =======================================================================
         optimization_based_planner:
+          # --- 时间离散化 ---
+          # 近处密集时间步长 [秒]
+          #   ↑ 增大: 近处控制更粗糙，计算更快
+          #   ↓ 减小: 近处控制更精细
           dense_resampling_time_interval: 0.2
+          # 远处稀疏时间步长 [秒]
           sparse_resampling_time_interval: 2.0
+          # 密集区域的时间长度 [秒]——0~5s 用密集步长
           dense_time_horizon: 5.0
+          # 总优化时域 [秒]
+          #   ↑ 增大: 看得更远，规划更提前，计算量更大
           max_time_horizon: 25.0
-          velocity_margin: 0.2 #[m/s]
+          # 输出速度安全余量 [m/s]——每个轨迹点加此值
+          #   ↑ 增大: 输出速度偏高，更激进
+          velocity_margin: 0.2
 
-          # Parameters for safe distance
+          # --- 安全约束 ---
+          # 危险时间余量 [秒]，用于速度优化器
+          #   ↑ 增大: 更保守，要求更早到达安全距离
           t_dangerous: 0.5
 
-          # For initial Motion
-          replan_vel_deviation: 5.0         # velocity deviation to replan initial velocity [m/s]
-          engage_velocity: 0.25              # engage velocity threshold [m/s] (if the trajectory velocity is higher than this value, use this velocity for engage vehicle speed)
-          engage_acceleration: 0.1           # engage acceleration [m/ss] (use this acceleration when engagement)
-          engage_exit_ratio: 0.5             # exit engage sequence to normal velocity planning when the velocity exceeds engage_exit_ratio x engage_velocity.
-          stop_dist_to_prohibit_engage: 0.5  # if the stop point is in this distance, the speed is set to 0 not to move the vehicle [m]
+          # --- 初始运动（起步阶段） ---
+          # 速度偏差触发重规划 [m/s]: 实际速度与规划速度差超过此值即重置
+          #   ↑ 增大: 更少重规划；↓ 减小: 对速度偏差更敏感
+          replan_vel_deviation: 5.0
+          # 起步速度 [m/s]: 停车后需要启动时，输出此速度让车辆动起来
+          #   ↑ 增大: 起步更快但可能冲击；↓ 减小: 起步平缓但可能不动
+          engage_velocity: 0.25
+          # 起步加速度 [m/s^2]: 起步阶段使用的加速度
+          engage_acceleration: 0.1
+          # 起步退出比例 [-]: 实际速度 > 此值 * engage_velocity 时退出起步模式
+          #   ↑ 增大: 起步模式保持更久
+          engage_exit_ratio: 0.5
+          # 禁止起步距离 [m]: 停车点在此距离内时不启动（防止刚停就走）
+          #   ↑ 增大: 更保守，更多场景抑制起步；↓ 减小: 更激进
+          stop_dist_to_prohibit_engage: 0.5
 
-          # Weights for optimization
+          # --- 优化权重 ---
+          # max_s_weight: 最大化进度的权重（走得越远越好）
           max_s_weight: 100.0
+          # max_v_weight: 最大化速度的权重（越快越好）
           max_v_weight: 1.0
+          # over_s_safety_weight: 违反安全S边界的惩罚（最大权重=最优先保证安全）
           over_s_safety_weight:  1000000.0
+          # over_s_ideal_weight: 违反理想S边界的惩罚
           over_s_ideal_weight:  50.0
+          # over_v_weight: 违反速度约束的惩罚
           over_v_weight:  500000.0
+          # over_a_weight: 违反加速度约束的惩罚
           over_a_weight:  5000.0
+          # over_j_weight: 违反加加速度(jerk)约束的惩罚
           over_j_weight:  10000.0
 
+      # =========================================================================
+      # 障碍物过滤参数 — 决定哪些对象触发跟车/减速/停止行为
+      # =========================================================================
       obstacle_filtering:
+        # =======================================================================
+        # 对象类型过滤 — 按轨迹内/外分类控制
+        # =======================================================================
         object_type:
+          # --------------------------------------------------------------------
+          # inside — 轨迹内的障碍物（前车跟车/减速场景）
+          #   true : 该类型作为巡航目标（触发减速/跟随）
+          #   false: 忽略该类型（直接从对象上方"碾过"——不做速度调整）
+          #
+          #   关键决策:
+          #   - pedestrian: false → 轨迹上的行人被忽略！
+          #     原因: 行人应由其他模块（如 obstacle_stop）用更严格的方式处理
+          #   - bicycle: true → 自行车被追踪，但注意其速度阈值不同
+          #   上游默认值: 完全相同
+          # --------------------------------------------------------------------
           inside:
             unknown: true
-            # unknown: false
             car: true
             truck: true
             bus: true
@@ -86,6 +336,17 @@
             bicycle: true
             pedestrian: false
 
+          # --------------------------------------------------------------------
+          # outside — 轨迹外的障碍物（旁车切入 cut-in 检测场景）
+          #   true : 检测该类型是否可能切入自车轨迹
+          #   false: 不关心轨迹外该类型的行为
+          #
+          #   关键决策:
+          #   - bicycle: false → 不检测自行车 cut-in
+          #     原因: 自行车通常靠边行驶，切入概率低
+          #   - unknown: false → 不追踪未知类型的旁车
+          #   上游默认值: 完全相同
+          # --------------------------------------------------------------------
           outside:
             unknown: false
             car: true
@@ -96,7 +357,14 @@
             bicycle: false
             pedestrian: false
 
-          # If an object does not have this label, the ego vehicle does not assume that the yielded obstacle will cut in due to the object.
+          # --------------------------------------------------------------------
+          # side_stopped — 旁车道中可能被 yield 判断使用的静止对象类型
+          #   用途: 当 moving obstacle 前方有此类型的 stopped object 时，
+          #         自车判断该 moving obstacle 可能"切进来"以避开 stopped object
+          #   true : 该类型的静止对象会触发 yield 预测
+          #   false: 不考虑该类型作为 yield 的诱因
+          #   上游默认值: 完全相同
+          # --------------------------------------------------------------------
           side_stopped:
             unknown: false
             car: true
@@ -107,26 +375,162 @@
             bicycle: false
             pedestrian: false
 
-        max_lat_margin: 1.0 # lateral margin between obstacle and trajectory band with ego's width
+        # =======================================================================
+        # max_lat_margin [米] — 轨迹检测带的横向容差
+        #   轨迹两侧各扩展此距离 + ego_width/2 作为"检测带"
+        #   障碍物到这个检测带的最小距离超过此值 → 被过滤掉
+        #   ↑ 增大（如 2.0）: 检测范围更宽，更多旁车被纳入考虑
+        #     → 更安全（早发现潜在威胁），但可能误判无关对象
+        #   ↓ 减小（如 0.5）: 检测带更窄，仅关注紧贴轨迹的对象
+        #     → 减少误触发，但可能漏掉刚刚开始切入的车辆
+        #   上游默认值: 1.0（相同）
+        # =======================================================================
+        max_lat_margin: 1.0
 
-        # if crossing vehicle is determined as target obstacles or not
+        # =======================================================================
+        # crossing_obstacle — 横穿障碍物检测
+        #   判断障碍物是否是"横穿"轨迹（如十字路口的横向来车）
+        #   横穿的障碍物不从 cruise 角度处理（交给 obstacle_stop 等模块）
+        # =======================================================================
         crossing_obstacle:
-          obstacle_velocity_threshold : 1.0 # velocity threshold for crossing obstacle for cruise or stop [m/s]
-          obstacle_traj_angle_threshold : 0.523599 # [rad] = 70 [deg], yaw threshold of crossing obstacle against the nearest trajectory point for cruise or stop
+          # --------------------------------------------------------------------
+          # obstacle_velocity_threshold [m/s] — 横穿对象的最低速度
+          #   速度低于此值的对象不判定为横穿（可能是停在路口）
+          #   ↑ 增大: 只把较快移动的当横穿
+          #   ↓ 减小: 慢速移动也判定为横穿
+          #   上游默认值: 1.0（相同）
+          # --------------------------------------------------------------------
+          obstacle_velocity_threshold : 1.0
+          # --------------------------------------------------------------------
+          # obstacle_traj_angle_threshold [rad] — 障碍物朝向与轨迹的偏角阈值
+          #   实际代码中: 0.5236 rad ≈ 30°
+          #   当 |yaw_diff| > 此值 且 |yaw_diff| < π - 此值 → 判定为横穿
+          #   即: 30°~150° 偏角范围内认为是横穿
+          #   ↑ 增大（如 1.0=57°）: 更大的角度才算横穿，减少误判
+          #   ↓ 减小（如 0.3=17°）: 更小的角度偏差就判横穿，更敏感
+          #   上游默认值: 0.523599（相同）
+          # --------------------------------------------------------------------
+          obstacle_traj_angle_threshold : 0.523599
 
+        # =======================================================================
+        # outside_obstacle — 轨迹外障碍物（cut-in切入）检测参数
+        # =======================================================================
         outside_obstacle:
-          obstacle_velocity_threshold : 1.5 # minimum velocity threshold of obstacles outside the trajectory to cruise or stop [m/s]
-          ego_obstacle_overlap_time_threshold : 0.2 #  time threshold to decide cut-in obstacle for cruise or stop [s]
-          max_prediction_time_for_collision_check : 10.0 # prediction time to check collision between obstacle and ego
-          max_lateral_time_margin: 5.0 # time threshold of lateral margin between obstacle and trajectory band with ego's width [s]
-          num_of_predicted_paths: 1 # number of the highest confidence predicted path to check collision between obstacle and ego
+          # --------------------------------------------------------------------
+          # obstacle_velocity_threshold [m/s] — 轨迹外对象的最低速度
+          #   轨迹外对象速度必须大于此值才会被作为潜在切入目标
+          #   ↑ 增大（如 3.0）: 只关注快速移动的旁车
+          #     → 减少低速旁车的误判，但可能忽略缓慢切入的车辆
+          #   ↓ 减小（如 0.5）: 慢速旁车也纳入关注
+          #   上游默认值: 1.5（相同）
+          # --------------------------------------------------------------------
+          obstacle_velocity_threshold : 1.5
+          # --------------------------------------------------------------------
+          # ego_obstacle_overlap_time_threshold [秒] — 重叠时间阈值
+          #   自车轨迹与预测轨迹的重叠时间必须超过此值才判定为切入
+          #   ↑ 增大（如 0.5）: 需要更长的重叠才判定切入
+          #     → 减少假阳性，但反应更慢
+          #   ↓ 减小（如 0.05）: 短暂重叠就触发
+          #     → 反应快，但可能频繁误触发
+          #   上游默认值: 0.2（相同）
+          # --------------------------------------------------------------------
+          ego_obstacle_overlap_time_threshold : 0.2
+          # --------------------------------------------------------------------
+          # max_prediction_time_for_collision_check [秒] — 碰撞预测时域
+          #   ↑ 增大（如 20.0）: 考虑更远的未来预测
+          #     → 更安全但计算量更大，可能过早减速
+          #   ↓ 减小（如 5.0）: 仅考虑近期预测
+          #     → 减少不必要的提前减速，但可能漏掉远期碰撞
+          #   上游默认值: 10.0（相同）
+          # --------------------------------------------------------------------
+          max_prediction_time_for_collision_check : 10.0
+          # --------------------------------------------------------------------
+          # max_lateral_time_margin [秒] — 横向接近时间容差
+          #   障碍物横移到轨迹带的时间 > 此值 → 忽略（还太远，不紧急）
+          #   ↑ 增大（如 10.0）: 考虑横向距离更远的对象
+          #     → 更早预警，但可能误判无关旁车
+          #   ↓ 减小（如 2.0）: 仅关注横向接近速度快的对象
+          #   上游默认值: 5.0（相同）
+          # --------------------------------------------------------------------
+          max_lateral_time_margin: 5.0
+          # --------------------------------------------------------------------
+          # num_of_predicted_paths [-] — 检查的预测路径数量
+          #   取置信度最高的前 N 条预测路径进行碰撞检查
+          #   ↑ 增大（如 3）: 考虑更多可能路径，更安全但计算量大
+          #   ↓ 减小（如 1）: 只检查最可能路径（当前值）
+          #   上游默认值: 1（相同）
+          # --------------------------------------------------------------------
+          num_of_predicted_paths: 1
+
+        # =======================================================================
+        # yield — 让行/避让逻辑
+        #   场景: 旁车道有静止障碍物，其后面有移动的车
+        #   判断: 那辆移动的车可能"切进来"绕障 → 自车应让行
+        # =======================================================================
         yield:
+          # --------------------------------------------------------------------
+          # enable_yield — 让行功能总开关
+          #   true : 启用 yield 逻辑，检测旁车需要切入的场景
+          #   false: 不检测让行场景
+          #   上游默认值: true（相同）
+          # --------------------------------------------------------------------
           enable_yield: true
-          lat_distance_threshold: 5.0 # lateral margin between obstacle in neighbor lanes and trajectory band with ego's width for yielding
-          max_lat_dist_between_obstacles: 2.5 # lateral margin between moving obstacle in neighbor lanes and stopped obstacle in front of it
-          max_obstacles_collision_time: 10.0 # how far the blocking obstacle
+          # --------------------------------------------------------------------
+          # lat_distance_threshold [米] — 让行横向距离阈值
+          #   moving obstacle 必须在此横向距离内才触发让行
+          #   ↑ 增大: 更远旁车道的车也考虑让行
+          #   ↓ 减小: 仅紧邻车道的车触发让行
+          #   上游默认值: 5.0（相同）
+          # --------------------------------------------------------------------
+          lat_distance_threshold: 5.0
+          # --------------------------------------------------------------------
+          # max_lat_dist_between_obstacles [米] — 移动对象与静止对象间的最大横向距离
+          #   moving object 与 stopped object 之间的横向距离必须 < 此值
+          #   才能触发"moving object 可能需要变道绕障"的判断
+          #   ↑ 增大: 更宽松的判定——更多场景触发行
+          #   ↓ 减小: 只有紧贴前方障碍物的旁车才触发
+          #   上游默认值: 2.5（相同）
+          # --------------------------------------------------------------------
+          max_lat_dist_between_obstacles: 2.5
+          # --------------------------------------------------------------------
+          # max_obstacles_collision_time [秒] — 障碍物间碰撞时间阈值
+          #   moving object 与 stopped object 的 TTC < 此值 → 触发让行
+          #   ↑ 增大: 考虑更远处即将碰撞的场景
+          #   ↓ 减小: 仅关注即将发生碰撞的场景
+          #   上游默认值: 10.0（相同）
+          # --------------------------------------------------------------------
+          max_obstacles_collision_time: 10.0
+          # --------------------------------------------------------------------
+          # stopped_obstacle_velocity_threshold [m/s] — 静止判定速度阈值
+          #   速度 < 此值 → 判定为静止对象
+          #   ↑ 增大: 缓慢移动的对象也当静止
+          #   ↓ 减小: 只有真正停止的才算静止
+          #   上游默认值: 0.5（相同）
+          # --------------------------------------------------------------------
           stopped_obstacle_velocity_threshold: 0.5
 
-        # hysteresis for cruise and stop
-        obstacle_velocity_threshold_from_cruise : 3.0 # stop planning is executed to the obstacle whose velocity is less than this value [m/s]
-        obstacle_velocity_threshold_to_cruise : 3.5 # stop planning is executed to the obstacle whose velocity is less than this value [m/s]
+        # =======================================================================
+        # 巡航/停止 迟滞带 (Hysteresis)
+        #   防止速度在阈值附近来回切换造成的状态抖动
+        #
+        #   当前值 from_cruise=3.0, to_cruise=3.5:
+        #      停止 → 巡航: 需要速度 > 3.5 m/s
+        #      巡航 → 停止: 需要速度 < 3.0 m/s
+        #      [3.0, 3.5] 区间内维持当前状态
+        # =======================================================================
+        # -----------------------------------------------------------------------
+        # obstacle_velocity_threshold_from_cruise [m/s] — 从巡航切换到停止的阈值
+        #   当前状态为"巡航" → 障碍物速度 < 此值 → 切换到"停止"模式
+        #   ↑ 增大（如 5.0）: 更快触发停止，对更快的对象也开始减速
+        #   ↓ 减小（如 1.0）: 仅在对象很慢时才切换到停止
+        #   上游默认值: 3.0（相同）
+        # -----------------------------------------------------------------------
+        obstacle_velocity_threshold_from_cruise : 3.0
+        # -----------------------------------------------------------------------
+        # obstacle_velocity_threshold_to_cruise [m/s] — 从停止切换到巡航的阈值
+        #   当前状态为"停止" → 障碍物速度 > 此值 → 切换到"巡航"模式
+        #   ↑ 增大（如 5.0）: 更难回到巡航模式（需要对象更快）
+        #   ↓ 减小（如 2.0）: 更容易从停止切回巡航
+        #   上游默认值: 3.5（相同）
+        # -----------------------------------------------------------------------
+        obstacle_velocity_threshold_to_cruise : 3.5
